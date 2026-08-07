@@ -2,6 +2,7 @@ import { getContext } from "@/lib/data";
 import { Card, CardHeader, PageHeader, buttonCls, inputCls, selectCls } from "@/components/ui";
 import { updateSpace } from "../actions";
 import { ConnectionRow } from "./settings-ui";
+import { PasswordForm } from "./password-form";
 import type { Connection } from "@/lib/types";
 
 export default async function SettingsPage() {
@@ -53,6 +54,11 @@ export default async function SettingsPage() {
               </div>
             ))}
           </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="Password" sub="for your login" />
+          <PasswordForm />
         </Card>
 
         <Card>
