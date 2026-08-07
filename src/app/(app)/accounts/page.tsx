@@ -180,9 +180,15 @@ export default async function AccountsPage({
                             </div>
                           </div>
                         </div>
-                        <span className="tnum text-[13.5px] font-medium">
-                          {fmtMoney(Number(a.current_balance ?? 0), a.currency)}
-                        </span>
+                        {a.current_balance == null ? (
+                          <span className="rounded-full bg-accent-soft px-2.5 py-1 text-[12px] font-medium text-accent">
+                            Set balance
+                          </span>
+                        ) : (
+                          <span className="tnum text-[13.5px] font-medium">
+                            {fmtMoney(Number(a.current_balance), a.currency)}
+                          </span>
+                        )}
                       </Link>
                     ))}
                   </div>

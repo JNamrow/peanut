@@ -38,6 +38,43 @@ async function riseupGet(token: string, path: string): Promise<unknown> {
   return res.json();
 }
 
+// Bank-side debits of monthly card bills. Counting these AND the card's
+// own purchases double-counts spending — Monarch marks them transfers.
+const CC_BILL_PATTERNS = [
+  "לאומי ויזה",
+  "אמריקן אקספרס",
+  "כרטיסי אשראי",
+  "ישראכרט",
+  "מקס איט",
+  "ויזה כאל",
+];
+
+function isCardBillDebit(name: string | null, isChecking: boolean): boolean {
+  if (!name || !isChecking) return false;
+  return CC_BILL_PATTERNS.some((p) => name.includes(p));
+}
+
+const INSTITUTIONS: Record<string, string> = {
+  leumiBank: "Bank Leumi",
+  poalim: "Bank Hapoalim",
+  mizrahi: "Bank Mizrahi",
+  discount: "Bank Discount",
+  leumicard: "Leumi Card",
+  max: "Max",
+  americanexpress: "American Express",
+  cal: "Visa Cal",
+  isracard: "Isracard",
+  onezero: "One Zero",
+};
+
+function prettyInstitution(source: string | null | undefined): string {
+  if (!source) return "RiseUp";
+  return (
+    INSTITUTIONS[source] ??
+    source.charAt(0).toUpperCase() + source.slice(1)
+  );
+}
+
 function monthStr(offset: number): string {
   const d = new Date();
   d.setDate(1);
@@ -115,6 +152,7 @@ export async function syncRiseup(
       let accountId = accountByHash.get(hash);
       if (!accountId) {
         const isCard = t.sourceType === "creditCard";
+        const pretty = prettyInstitution(t.source);
         const { data: acc, error } = await admin
           .from("accounts")
           .insert({
@@ -123,9 +161,9 @@ export async function syncRiseup(
             source: "riseup",
             external_id: hash,
             name:
-              t.accountNickname ||
-              `${t.source ?? "RiseUp"} ${isCard ? "card" : "account"} ${hash.slice(0, 4)}`,
-            institution_name: t.source ?? "RiseUp",
+              t.accountNickname || (isCard ? pretty : `${pretty} Checking`),
+            institution_name: pretty,
+            mask: hash.slice(0, 4),
             type: isCard ? "credit" : "checking",
             currency: "ILS",
             is_liability: isCard,
@@ -174,6 +212,13 @@ export async function syncRiseup(
         }
       }
 
+      const cardBill = isCardBillDebit(
+        t.businessName ?? null,
+        t.sourceType !== "creditCard",
+      );
+      if (cardBill) {
+        categoryId = categoryByName.get("Credit Card Payment") ?? categoryId;
+      }
       const { error: upErr } = await admin.from("transactions").upsert(
         {
           space_id: spaceId,
@@ -187,7 +232,8 @@ export async function syncRiseup(
           amount: t.isIncome ? Math.abs(t.amount) : -Math.abs(t.amount),
           currency: "ILS",
           category_id: categoryId,
-          categorized_by: categoryId ? "provider" : "none",
+          categorized_by: cardBill ? "rule" : categoryId ? "provider" : "none",
+          is_transfer: cardBill,
           raw: t as unknown as Record<string, unknown>,
         },
         { onConflict: "connection_id,external_id" },
