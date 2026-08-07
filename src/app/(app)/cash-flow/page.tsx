@@ -1,9 +1,11 @@
 import { getCategories, getContext } from "@/lib/data";
-import { computeCashflow } from "@/lib/cashflow";
+import { computeCashflowPerCurrency, currencyOrder } from "@/lib/multicurrency";
 import { addMonths, fmtMoney, fmtPct, monthLabel, monthStart } from "@/lib/format";
 import { TrendBars } from "@/components/charts";
 import { Card, CardHeader, PageHeader, Segmented } from "@/components/ui";
 import type { Transaction } from "@/lib/types";
+
+const CCY_SYMBOL: Record<string, string> = { ILS: "₪", USD: "$" };
 
 export default async function CashFlowPage({
   searchParams,
@@ -11,7 +13,7 @@ export default async function CashFlowPage({
   searchParams: Promise<{ month?: string }>;
 }) {
   const params = await searchParams;
-  const { supabase, space, rates, displayCurrency } = await getContext();
+  const { supabase, space } = await getContext();
   const categories = await getCategories();
 
   const month = params.month ?? monthStart().slice(0, 7);
@@ -24,33 +26,44 @@ export default async function CashFlowPage({
     .gte("date", since);
 
   const byMonth = new Map<string, Transaction[]>();
+  const seen = new Set<string>();
   for (const t of (txns ?? []) as Transaction[]) {
     const m = t.date.slice(0, 7);
     const arr = byMonth.get(m) ?? [];
     arr.push(t);
     byMonth.set(m, arr);
+    seen.add(t.currency);
   }
+  const currencies = currencyOrder(seen);
 
-  const trend: { label: string; income: number; expense: number }[] = [];
+  // 12-month trend per currency
+  const trendByCcy = new Map<string, { label: string; income: number; expense: number }[]>();
   for (let i = 11; i >= 0; i--) {
     const m = addMonths(monthStart(), -i).slice(0, 7);
-    const cf = computeCashflow(byMonth.get(m) ?? [], categories, rates, displayCurrency);
-    trend.push({
-      label: new Date(`${m}-01T00:00:00`).toLocaleDateString("en-US", {
-        month: "short",
-      }),
-      income: Math.round(cf.income),
-      expense: Math.round(cf.expense),
-    });
+    const label = new Date(`${m}-01T00:00:00`).toLocaleDateString("en-US", { month: "short" });
+    const cf = computeCashflowPerCurrency(byMonth.get(m) ?? [], categories);
+    for (const ccy of currencies) {
+      const arr = trendByCcy.get(ccy) ?? [];
+      const c = cf.get(ccy);
+      arr.push({
+        label,
+        income: Math.round(c?.income ?? 0),
+        expense: Math.round(c?.expense ?? 0),
+      });
+      trendByCcy.set(ccy, arr);
+    }
   }
 
-  const cf = computeCashflow(byMonth.get(month) ?? [], categories, rates, displayCurrency);
+  const monthCf = computeCashflowPerCurrency(byMonth.get(month) ?? [], categories);
   const catById = new Map(categories.map((c) => [c.id, c]));
 
   const monthOptions: { value: string; label: string }[] = [];
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 6; i++) {
     const m = addMonths(monthStart(), -i).slice(0, 7);
-    monthOptions.push({ value: m, label: monthLabel(m) });
+    monthOptions.push({
+      value: m,
+      label: monthLabel(m).split(" ")[0],
+    });
   }
 
   function rankRows(map: Map<string, number>) {
@@ -61,96 +74,115 @@ export default async function CashFlowPage({
       }))
       .sort((a, b) => b.value - a.value);
   }
-  const incomeRows = rankRows(cf.incomeByCategory);
-  const expenseRows = rankRows(cf.expenseByCategory);
-  const maxIncome = Math.max(1, ...incomeRows.map((r) => r.value));
-  const maxExpense = Math.max(1, ...expenseRows.map((r) => r.value));
 
   return (
     <>
-      <PageHeader title="Cash Flow" />
-      <div className="flex flex-col gap-4 px-6 pt-2">
-        <Card>
-          <CardHeader title="Income vs expenses" sub="last 12 months" />
-          <div className="px-2 pb-2">
-            <TrendBars data={trend} currency={displayCurrency} height={220} />
-          </div>
-        </Card>
-
-        <div className="flex items-center justify-between">
-          <h2 className="text-[17px] font-semibold">{monthLabel(month)}</h2>
+      <PageHeader
+        title="Cash Flow"
+        right={
           <Segmented
-            options={monthOptions.slice(0, 6).map((o) => ({
-              value: o.value,
-              label: o.label.split(" ")[0],
-            }))}
+            options={monthOptions}
             value={month}
             hrefBase="/cash-flow"
             param="month"
           />
-        </div>
+        }
+      />
+      <div className="flex flex-col gap-4 px-6 pt-2">
+        {currencies.length === 0 ? (
+          <Card>
+            <p className="px-5 py-10 text-center text-[13px] text-muted">
+              No transactions yet. Connect an account first.
+            </p>
+          </Card>
+        ) : null}
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat label="INCOME" value={fmtMoney(cf.income, displayCurrency, { decimals: false })} tone="pos" />
-          <Stat label="EXPENSES" value={fmtMoney(cf.expense, displayCurrency, { decimals: false })} />
-          <Stat
-            label="TOTAL SAVINGS"
-            value={fmtMoney(cf.savings, displayCurrency, { decimals: false })}
-            tone={cf.savings >= 0 ? "pos" : "neg"}
-          />
-          <Stat
-            label="SAVINGS RATE"
-            value={cf.income > 0 ? fmtPct(cf.savingsRate * 100, 0) : "—"}
-          />
-        </div>
-
-        <Card>
-          <CardHeader title="Income" />
-          <div className="flex flex-col gap-1 px-5 pb-4">
-            {incomeRows.length === 0 ? (
-              <p className="py-4 text-center text-[13px] text-muted">
-                No income this month.
-              </p>
-            ) : (
-              incomeRows.map((r, i) => (
-                <BarRow
-                  key={i}
-                  icon={r.cat?.icon}
-                  name={r.cat?.name ?? "Uncategorized"}
-                  value={r.value}
-                  max={maxIncome}
-                  share={cf.income > 0 ? r.value / cf.income : 0}
-                  currency={displayCurrency}
-                  color="bg-pos-soft"
+        {currencies.map((ccy) => {
+          const cf = monthCf.get(ccy);
+          const trend = trendByCcy.get(ccy) ?? [];
+          const hasAny = trend.some((t) => t.income > 0 || t.expense > 0);
+          if (!hasAny) return null;
+          const incomeRows = cf ? rankRows(cf.incomeByCategory) : [];
+          const expenseRows = cf ? rankRows(cf.expenseByCategory) : [];
+          const maxIncome = Math.max(1, ...incomeRows.map((r) => r.value));
+          const maxExpense = Math.max(1, ...expenseRows.map((r) => r.value));
+          return (
+            <section key={ccy} className="flex flex-col gap-3">
+              <h2 className="mt-2 text-[16px] font-semibold">
+                {CCY_SYMBOL[ccy] ?? ""} {ccy} · {monthLabel(month)}
+              </h2>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <Stat label="INCOME" value={fmtMoney(cf?.income ?? 0, ccy, { decimals: false })} tone="pos" />
+                <Stat label="EXPENSES" value={fmtMoney(cf?.expense ?? 0, ccy, { decimals: false })} />
+                <Stat
+                  label="TOTAL SAVINGS"
+                  value={fmtMoney(cf?.savings ?? 0, ccy, { decimals: false })}
+                  tone={(cf?.savings ?? 0) >= 0 ? "pos" : "neg"}
                 />
-              ))
-            )}
-          </div>
-        </Card>
-
-        <Card>
-          <CardHeader title="Expenses" />
-          <div className="flex flex-col gap-1 px-5 pb-4">
-            {expenseRows.length === 0 ? (
-              <p className="py-4 text-center text-[13px] text-muted">
-                No expenses this month.
-              </p>
-            ) : (
-              expenseRows.map((r, i) => (
-                <BarRow
-                  key={i}
-                  icon={r.cat?.icon}
-                  name={r.cat?.name ?? "Uncategorized"}
-                  value={r.value}
-                  max={maxExpense}
-                  share={cf.expense > 0 ? r.value / cf.expense : 0}
-                  currency={displayCurrency}
-                  color="bg-neg-soft"
+                <Stat
+                  label="SAVINGS RATE"
+                  value={cf && cf.income > 0 ? fmtPct(cf.savingsRate * 100, 0) : "—"}
                 />
-              ))
-            )}
-          </div>
-        </Card>
+              </div>
+
+              <Card>
+                <CardHeader title={`Income vs expenses`} sub="last 12 months" />
+                <div className="px-2 pb-2">
+                  <TrendBars data={trend} currency={ccy} height={190} />
+                </div>
+              </Card>
+
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <Card>
+                  <CardHeader title="Income" />
+                  <div className="flex flex-col gap-1 px-5 pb-4">
+                    {incomeRows.length === 0 ? (
+                      <p className="py-3 text-center text-[13px] text-muted">
+                        No income this month.
+                      </p>
+                    ) : (
+                      incomeRows.map((r, i) => (
+                        <BarRow
+                          key={i}
+                          icon={r.cat?.icon}
+                          name={r.cat?.name ?? "Uncategorized"}
+                          value={r.value}
+                          max={maxIncome}
+                          share={cf && cf.income > 0 ? r.value / cf.income : 0}
+                          currency={ccy}
+                          color="bg-pos-soft"
+                        />
+                      ))
+                    )}
+                  </div>
+                </Card>
+                <Card>
+                  <CardHeader title="Expenses" />
+                  <div className="flex flex-col gap-1 px-5 pb-4">
+                    {expenseRows.length === 0 ? (
+                      <p className="py-3 text-center text-[13px] text-muted">
+                        No expenses this month.
+                      </p>
+                    ) : (
+                      expenseRows.map((r, i) => (
+                        <BarRow
+                          key={i}
+                          icon={r.cat?.icon}
+                          name={r.cat?.name ?? "Uncategorized"}
+                          value={r.value}
+                          max={maxExpense}
+                          share={cf && cf.expense > 0 ? r.value / cf.expense : 0}
+                          currency={ccy}
+                          color="bg-neg-soft"
+                        />
+                      ))
+                    )}
+                  </div>
+                </Card>
+              </div>
+            </section>
+          );
+        })}
       </div>
     </>
   );
@@ -168,7 +200,7 @@ function Stat({
   return (
     <Card className="px-5 py-4 text-center">
       <div
-        className={`tnum text-[20px] font-semibold ${tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : ""}`}
+        className={`tnum text-[19px] font-semibold ${tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : ""}`}
       >
         {value}
       </div>

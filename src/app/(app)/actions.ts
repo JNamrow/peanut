@@ -170,11 +170,27 @@ export async function deleteAccount(accountId: string) {
 
 // ------------------------------------------------------------------ riseup
 
-export async function connectRiseup(formData: FormData): Promise<void> {
+export interface ActionResult {
+  error: string | null;
+  detail?: string;
+}
+
+function describeRiseupError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg === "RISEUP_TOKEN_EXPIRED") {
+    return "RiseUp said this token is not valid (401). Make sure you copied the full token, or create a fresh one — they expire after 30 days.";
+  }
+  if (msg.startsWith("RISEUP_RATE_LIMITED")) {
+    return "RiseUp rate limit hit. Wait a minute and try again.";
+  }
+  return `RiseUp sync failed: ${msg}`;
+}
+
+export async function connectRiseup(formData: FormData): Promise<ActionResult> {
   const { supabase, space, userId } = await getContext();
   const token = String(formData.get("token") ?? "").trim();
   if (!token.startsWith("riseup_pat_")) {
-    throw new Error("That is not a RiseUp token. It starts with riseup_pat_");
+    return { error: "That is not a RiseUp token. It starts with riseup_pat_" };
   }
   const { data: conn, error } = await supabase
     .from("connections")
@@ -189,31 +205,40 @@ export async function connectRiseup(formData: FormData): Promise<void> {
     })
     .select("id")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) return { error: `Could not save the connection: ${error.message}` };
 
   const admin = createAdminClient();
   const { error: vaultErr } = await admin.rpc("peanut_vault_set_secret", {
     p_name: `conn_${conn.id}`,
     p_secret: token,
   });
-  if (vaultErr) throw new Error(vaultErr.message);
+  if (vaultErr) {
+    await supabase.from("connections").delete().eq("id", conn.id);
+    return { error: `Could not store the token: ${vaultErr.message}` };
+  }
 
   try {
     await syncRiseup(conn.id, { backfillMonths: 12 });
   } catch (e) {
-    await markRiseupError(conn.id, e instanceof Error ? e.message : "sync failed");
-    throw e;
+    const friendly = describeRiseupError(e);
+    await markRiseupError(conn.id, friendly);
+    // Keep the connection so a token renew can fix it without re-adding.
+    return { error: friendly };
   }
   await writeDailySnapshots();
   revalidatePath("/accounts");
   revalidatePath("/transactions");
+  return { error: null };
 }
 
-export async function renewRiseupToken(connectionId: string, formData: FormData) {
+export async function renewRiseupToken(
+  connectionId: string,
+  formData: FormData,
+): Promise<ActionResult> {
   const { supabase } = await getContext();
   const token = String(formData.get("token") ?? "").trim();
   if (!token.startsWith("riseup_pat_")) {
-    throw new Error("That is not a RiseUp token. It starts with riseup_pat_");
+    return { error: "That is not a RiseUp token. It starts with riseup_pat_" };
   }
   // RLS check: the user must be able to see this connection.
   const { data: conn } = await supabase
@@ -221,7 +246,7 @@ export async function renewRiseupToken(connectionId: string, formData: FormData)
     .select("id, config")
     .eq("id", connectionId)
     .single();
-  if (!conn) throw new Error("Connection not found");
+  if (!conn) return { error: "Connection not found" };
   const admin = createAdminClient();
   await admin.rpc("peanut_vault_set_secret", {
     p_name: `conn_${connectionId}`,
@@ -238,8 +263,15 @@ export async function renewRiseupToken(connectionId: string, formData: FormData)
       },
     })
     .eq("id", connectionId);
-  await syncRiseup(connectionId);
+  try {
+    await syncRiseup(connectionId);
+  } catch (e) {
+    const friendly = describeRiseupError(e);
+    await markRiseupError(connectionId, friendly);
+    return { error: friendly };
+  }
   revalidatePath("/settings");
+  return { error: null };
 }
 
 // -------------------------------------------------------------------- sync
@@ -296,6 +328,7 @@ export async function setRecurringStatus(
 export async function upsertBudget(
   month: string,
   categoryId: string,
+  currency: string,
   amount: number,
 ) {
   const { supabase, space } = await getContext();
@@ -305,11 +338,12 @@ export async function upsertBudget(
       .delete()
       .eq("space_id", space.id)
       .eq("month", month)
-      .eq("category_id", categoryId);
+      .eq("category_id", categoryId)
+      .eq("currency", currency);
   } else {
     await supabase.from("budgets").upsert(
-      { space_id: space.id, month, category_id: categoryId, amount },
-      { onConflict: "space_id,month,category_id" },
+      { space_id: space.id, month, category_id: categoryId, currency, amount },
+      { onConflict: "space_id,month,category_id,currency" },
     );
   }
   revalidatePath("/budget");

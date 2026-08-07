@@ -7,10 +7,12 @@ import { upsertBudget } from "../actions";
 export function BudgetInput({
   month,
   categoryId,
+  currency,
   value,
 }: {
   month: string;
   categoryId: string;
+  currency: string;
   value: number;
 }) {
   const router = useRouter();
@@ -21,7 +23,7 @@ export function BudgetInput({
     const n = Number(local || 0);
     if (n === value) return;
     startTransition(async () => {
-      await upsertBudget(month, categoryId, n);
+      await upsertBudget(month, categoryId, currency, n);
       router.refresh();
     });
   }

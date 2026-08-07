@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { PeanutMark } from "./logo";
-import { NavLink, CurrencyToggle } from "./nav";
+import { NavLink } from "./nav";
 import { getContext } from "@/lib/data";
 import { signOut } from "@/app/(auth)/actions";
 import { LogOut } from "lucide-react";
@@ -36,7 +36,6 @@ export async function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="mt-auto flex flex-col gap-2">
-          <CurrencyToggle current={ctx.displayCurrency} />
           <NavLink slug="settings" label="Settings" />
           <div className="flex items-center justify-between rounded-lg px-2.5 py-1.5">
             <div className="flex items-center gap-2">

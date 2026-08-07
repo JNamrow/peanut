@@ -141,15 +141,8 @@ export function TxnTable({
     }
     return [...m.entries()];
   }, [txns]);
-
-  function conv(t: Transaction): number {
-    if (t.currency === displayCurrency) return Number(t.amount);
-    if (t.currency === "USD" && displayCurrency === "ILS")
-      return Number(t.amount) * usdIls;
-    if (t.currency === "ILS" && displayCurrency === "USD")
-      return Number(t.amount) / usdIls;
-    return Number(t.amount);
-  }
+  void displayCurrency;
+  void usdIls;
 
   const pages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -161,15 +154,25 @@ export function TxnTable({
         </p>
       ) : (
         groups.map(([date, list]) => {
-          const dayTotal = list.reduce((s, t) => s + conv(t), 0);
+          const perCcy = new Map<string, number>();
+          for (const t of list) {
+            perCcy.set(t.currency, (perCcy.get(t.currency) ?? 0) + Number(t.amount));
+          }
+          const dayTotals = ["ILS", "USD", ...[...perCcy.keys()].filter((c) => c !== "ILS" && c !== "USD")]
+            .filter((c) => perCcy.has(c))
+            .map((c) => ({ ccy: c, v: perCcy.get(c)! }));
           return (
             <div key={date}>
               <div className="flex items-center justify-between bg-bg/70 px-4 py-1.5">
                 <span className="text-[12px] font-medium text-muted">
                   {longDate(date)}
                 </span>
-                <span className="tnum text-[12px] text-muted">
-                  {fmtMoney(dayTotal, displayCurrency, { sign: dayTotal > 0 })}
+                <span className="flex items-center gap-2.5">
+                  {dayTotals.map((d) => (
+                    <span key={d.ccy} className="tnum text-[12px] text-muted">
+                      {fmtMoney(d.v, d.ccy, { sign: d.v > 0 })}
+                    </span>
+                  ))}
                 </span>
               </div>
               {list.map((t) => (

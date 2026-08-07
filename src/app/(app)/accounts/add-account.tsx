@@ -180,13 +180,13 @@ function RiseupPanel({ onDone }: { onDone: () => void }) {
   function submit(formData: FormData) {
     setError(null);
     startTransition(async () => {
-      try {
-        await connectRiseup(formData);
-        router.refresh();
-        onDone();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to connect.");
+      const result = await connectRiseup(formData);
+      if (result.error) {
+        setError(result.error);
+        return;
       }
+      router.refresh();
+      onDone();
     });
   }
 

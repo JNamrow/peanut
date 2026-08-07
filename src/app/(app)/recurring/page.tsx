@@ -1,5 +1,6 @@
 import { getAccounts, getContext } from "@/lib/data";
 import { fmtMoney, shortDate } from "@/lib/format";
+import { DualMoney } from "@/components/dual-money";
 import { Card, CardHeader, EmptyState, PageHeader } from "@/components/ui";
 import { DetectButton, StreamActions } from "./recurring-ui";
 import type { RecurringStream } from "@/lib/types";
@@ -15,7 +16,7 @@ const CADENCE_LABEL: Record<string, string> = {
 };
 
 export default async function RecurringPage() {
-  const { supabase, space, rates, displayCurrency } = await getContext();
+  const { supabase, space } = await getContext();
   const accounts = await getAccounts();
   const { data: streams } = await supabase
     .from("recurring_streams")
@@ -29,7 +30,9 @@ export default async function RecurringPage() {
   const active = list.filter((s) => s.status === "active");
   const accountById = new Map(accounts.map((a) => [a.id, a.name]));
 
-  const monthlyTotal = active.reduce((s, r) => {
+  const monthlyByCcy = new Map<string, number>();
+  for (const r of active) {
+    if (r.kind !== "expense") continue;
     const factor =
       r.cadence === "weekly"
         ? 4.33
@@ -42,9 +45,14 @@ export default async function RecurringPage() {
               : r.cadence === "semiyearly"
                 ? 1 / 6
                 : 1 / 12;
-    const v = rates.convert(Number(r.typical_amount ?? 0), r.currency, displayCurrency);
-    return s + (r.kind === "expense" ? v * factor : 0);
-  }, 0);
+    monthlyByCcy.set(
+      r.currency,
+      (monthlyByCcy.get(r.currency) ?? 0) + Number(r.typical_amount ?? 0) * factor,
+    );
+  }
+  const monthlyTotals = ["ILS", "USD", ...[...monthlyByCcy.keys()].filter((c) => c !== "ILS" && c !== "USD")]
+    .filter((c) => monthlyByCcy.has(c))
+    .map((c) => ({ currency: c, value: monthlyByCcy.get(c)! }));
 
   return (
     <>
@@ -52,9 +60,7 @@ export default async function RecurringPage() {
       <div className="flex flex-col gap-4 px-6 pt-2">
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
           <Card className="px-5 py-4">
-            <div className="tnum text-[20px] font-semibold">
-              {fmtMoney(monthlyTotal, displayCurrency, { decimals: false })}
-            </div>
+            <DualMoney size="lg" values={monthlyTotals.length ? monthlyTotals : [{ currency: "ILS", value: 0 }]} />
             <div className="text-[11px] font-semibold tracking-wider text-muted">
               MONTHLY RECURRING EXPENSES
             </div>

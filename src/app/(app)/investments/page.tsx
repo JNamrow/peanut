@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { getAccounts, getContext } from "@/lib/data";
-import { buildNetWorthSeries } from "@/lib/networth";
+import {
+  activeCurrencies,
+  buildSeriesPerCurrency,
+  sumBalancesByCurrency,
+} from "@/lib/multicurrency";
 import { fmtMoney } from "@/lib/format";
 import { NetWorthChart, Donut } from "@/components/charts";
 import { Card, CardHeader, EmptyState, PageHeader, Segmented } from "@/components/ui";
@@ -8,6 +12,7 @@ import type { Holding } from "@/lib/types";
 import { TrendingUp } from "lucide-react";
 
 const RANGES: Record<string, number> = { "1M": 30, "3M": 91, "6M": 182, "1Y": 365 };
+const CCY_SYMBOL: Record<string, string> = { ILS: "₪", USD: "$" };
 
 export default async function InvestmentsPage({
   searchParams,
@@ -16,9 +21,8 @@ export default async function InvestmentsPage({
 }) {
   const { range = "3M" } = await searchParams;
   const days = RANGES[range] ?? 91;
-  const ctx = await getContext();
+  const { supabase } = await getContext();
   const accounts = await getAccounts();
-  const { supabase, rates, displayCurrency } = ctx;
 
   const invAccounts = accounts.filter(
     (a) => (a.type === "investment" || a.type === "pension") && !a.hidden,
@@ -40,30 +44,9 @@ export default async function InvestmentsPage({
       : Promise.resolve({ data: [] }),
   ]);
 
-  const series = buildNetWorthSeries(
-    invAccounts,
-    snapshots ?? [],
-    rates,
-    displayCurrency,
-    days,
-  );
-  const total = invAccounts.reduce(
-    (s, a) => s + rates.convert(Number(a.current_balance ?? 0), a.currency, displayCurrency),
-    0,
-  );
-  const start = series.length ? series[0].value : total;
-  const change = total - start;
-  const changePct = start !== 0 ? (change / Math.abs(start)) * 100 : 0;
-
-  const allocation = invAccounts
-    .map((a) => ({
-      name: a.name,
-      value: Math.round(
-        rates.convert(Number(a.current_balance ?? 0), a.currency, displayCurrency),
-      ),
-    }))
-    .filter((x) => x.value > 0)
-    .sort((a, b) => b.value - a.value);
+  const currencies = activeCurrencies(invAccounts);
+  const totalsByCcy = sumBalancesByCurrency(invAccounts);
+  const seriesByCcy = buildSeriesPerCurrency(invAccounts, snapshots ?? [], days);
 
   const holdingsByAccount = new Map<string, Holding[]>();
   for (const h of (holdings ?? []) as Holding[]) {
@@ -74,50 +57,73 @@ export default async function InvestmentsPage({
 
   return (
     <>
-      <PageHeader title="Investments" />
+      <PageHeader
+        title="Investments"
+        right={
+          <Segmented
+            options={Object.keys(RANGES).map((r) => ({ value: r, label: r }))}
+            value={range}
+            hrefBase="/investments"
+            param="range"
+          />
+        }
+      />
       <div className="flex flex-col gap-4 px-6 pt-2">
         <Card>
-          <div className="flex items-start justify-between px-5 pt-4">
-            <div>
-              <div className="text-[11px] font-semibold tracking-wider text-muted">
-                PORTFOLIO VALUE
+          <div className="grid grid-cols-1 divide-y divide-line md:grid-cols-2 md:divide-x md:divide-y-0">
+            {currencies.length === 0 ? (
+              <div className="md:col-span-2">
+                <EmptyState
+                  icon={<TrendingUp size={19} />}
+                  title="No investment accounts yet"
+                  sub="Connect Robinhood with Plaid, or add a pension that tracks itself."
+                />
               </div>
-              <div className="flex items-baseline gap-3">
-                <span className="tnum text-[26px] font-semibold">
-                  {fmtMoney(total, displayCurrency, { decimals: false })}
-                </span>
-                {series.length > 1 ? (
-                  <span
-                    className={`tnum text-[13px] font-medium ${change >= 0 ? "text-pos" : "text-neg"}`}
-                  >
-                    {change >= 0 ? "↗" : "↘"}{" "}
-                    {fmtMoney(Math.abs(change), displayCurrency, { decimals: false })} (
-                    {Math.abs(changePct).toFixed(1)}%) {range}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-            <Segmented
-              options={Object.keys(RANGES).map((r) => ({ value: r, label: r }))}
-              value={range}
-              hrefBase="/investments"
-              param="range"
-            />
-          </div>
-          <div className="px-2 pb-2 pt-1">
-            {series.length > 1 ? (
-              <NetWorthChart data={series} currency={displayCurrency} height={210} />
             ) : (
-              <EmptyState
-                icon={<TrendingUp size={19} />}
-                title="No investment accounts yet"
-                sub="Connect Robinhood with Plaid, or add a pension that tracks itself."
-              />
+              currencies.map((ccy) => {
+                const series = seriesByCcy.get(ccy) ?? [];
+                const total = totalsByCcy.get(ccy)?.net ?? 0;
+                const start = series.length ? series[0].value : total;
+                const change = total - start;
+                const changePct = start !== 0 ? (change / Math.abs(start)) * 100 : 0;
+                return (
+                  <div key={ccy} className={currencies.length === 1 ? "md:col-span-2" : ""}>
+                    <div className="px-5 pt-4">
+                      <div className="text-[11px] font-semibold tracking-wider text-muted">
+                        {CCY_SYMBOL[ccy] ?? ccy} PORTFOLIO
+                      </div>
+                      <div className="flex items-baseline gap-2.5">
+                        <span className="tnum text-[24px] font-semibold">
+                          {fmtMoney(total, ccy, { decimals: false })}
+                        </span>
+                        {series.length > 1 ? (
+                          <span
+                            className={`tnum text-[12.5px] font-medium ${change >= 0 ? "text-pos" : "text-neg"}`}
+                          >
+                            {change >= 0 ? "↗" : "↘"}{" "}
+                            {fmtMoney(Math.abs(change), ccy, { decimals: false })} (
+                            {Math.abs(changePct).toFixed(1)}%) {range}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="px-2 pb-1 pt-1">
+                      {series.length > 1 ? (
+                        <NetWorthChart data={series} currency={ccy} height={170} />
+                      ) : (
+                        <p className="px-3 pb-3 text-[12.5px] text-muted">
+                          History starts today.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_330px]">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_320px]">
           <div className="flex flex-col gap-4">
             {invAccounts.map((a) => {
               const accHoldings = holdingsByAccount.get(a.id) ?? [];
@@ -130,22 +136,11 @@ export default async function InvestmentsPage({
                         {a.name}
                       </Link>
                     }
-                    sub={a.type === "pension" ? "auto-tracked pension" : a.institution_name ?? ""}
+                    sub={a.type === "pension" ? "auto-tracked pension" : (a.institution_name ?? "")}
                     right={
-                      <div className="text-right">
-                        <div className="tnum text-[14px] font-semibold">
-                          {fmtMoney(balance, a.currency)}
-                        </div>
-                        {a.currency !== displayCurrency ? (
-                          <div className="tnum text-[11.5px] text-faint">
-                            {fmtMoney(
-                              rates.convert(balance, a.currency, displayCurrency),
-                              displayCurrency,
-                              { decimals: false },
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
+                      <span className="tnum text-[14px] font-semibold">
+                        {fmtMoney(balance, a.currency)}
+                      </span>
                     }
                   />
                   {accHoldings.length > 0 ? (
@@ -184,17 +179,26 @@ export default async function InvestmentsPage({
               );
             })}
           </div>
-          <div>
-            <Card>
-              <CardHeader title="Allocation" sub="by account" />
-              <div className="px-4 pb-4">
-                {allocation.length > 0 ? (
-                  <Donut data={allocation} currency={displayCurrency} height={210} />
-                ) : (
-                  <p className="py-6 text-center text-[13px] text-muted">Nothing yet.</p>
-                )}
-              </div>
-            </Card>
+          <div className="flex flex-col gap-4">
+            {currencies.map((ccy) => {
+              const list = invAccounts
+                .filter((a) => a.currency === ccy)
+                .map((a) => ({
+                  name: a.name,
+                  value: Math.round(Number(a.current_balance ?? 0)),
+                }))
+                .filter((x) => x.value > 0)
+                .sort((a, b) => b.value - a.value);
+              if (list.length === 0) return null;
+              return (
+                <Card key={ccy}>
+                  <CardHeader title="Allocation" sub={`${CCY_SYMBOL[ccy] ?? ""} ${ccy}`} />
+                  <div className="px-4 pb-4">
+                    <Donut data={list} currency={ccy} height={190} />
+                  </div>
+                </Card>
+              );
+            })}
           </div>
         </div>
       </div>

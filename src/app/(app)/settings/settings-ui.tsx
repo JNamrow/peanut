@@ -92,13 +92,13 @@ export function ConnectionRow({ connection: c }: { connection: Connection }) {
           action={(fd) =>
             startTransition(async () => {
               setError(null);
-              try {
-                await renewRiseupToken(c.id, fd);
-                setRenewOpen(false);
-                router.refresh();
-              } catch (e) {
-                setError(e instanceof Error ? e.message : "Failed");
+              const result = await renewRiseupToken(c.id, fd);
+              if (result.error) {
+                setError(result.error);
+                return;
               }
+              setRenewOpen(false);
+              router.refresh();
             })
           }
           className="mt-2 flex gap-2"

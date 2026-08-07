@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { getCategories, getContext } from "@/lib/data";
-import { computeCashflow } from "@/lib/cashflow";
+import { getAccounts, getCategories, getContext } from "@/lib/data";
+import { activeCurrencies, computeCashflowPerCurrency } from "@/lib/multicurrency";
 import { addMonths, fmtMoney, monthLabel, monthStart } from "@/lib/format";
-import { Card, PageHeader, buttonCls } from "@/components/ui";
+import { Card, PageHeader, Segmented, buttonCls } from "@/components/ui";
 import { BudgetInput } from "./budget-input";
 import type { Budget, Category, Transaction } from "@/lib/types";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -16,7 +16,7 @@ const BUCKETS: { key: string; label: string }[] = [
 export default async function BudgetPage({
   searchParams,
 }: {
-  searchParams: Promise<{ month?: string }>;
+  searchParams: Promise<{ month?: string; ccy?: string }>;
 }) {
   const params = await searchParams;
   const month = /^\d{4}-\d{2}$/.test(params.month ?? "")
@@ -24,8 +24,12 @@ export default async function BudgetPage({
     : monthStart();
   const monthKey = month.slice(0, 7);
 
-  const { supabase, space, rates, displayCurrency } = await getContext();
-  const categories = await getCategories();
+  const { supabase, space } = await getContext();
+  const [accounts, categories] = await Promise.all([getAccounts(), getCategories()]);
+  const currencies = activeCurrencies(accounts);
+  const ccy = currencies.includes(params.ccy ?? "")
+    ? params.ccy!
+    : (currencies[0] ?? "ILS");
 
   const nextMonth = addMonths(month, 1);
   const [{ data: budgets }, { data: txns }] = await Promise.all([
@@ -33,24 +37,24 @@ export default async function BudgetPage({
       .from("budgets")
       .select("*")
       .eq("space_id", space.id)
-      .eq("month", month),
+      .eq("month", month)
+      .eq("currency", ccy),
     supabase
       .from("transactions")
       .select("*")
       .eq("space_id", space.id)
+      .eq("currency", ccy)
       .gte("date", month)
       .lt("date", nextMonth),
   ]);
 
   const budgetByCat = new Map(
-    ((budgets ?? []) as Budget[]).map((b) => [b.category_id, Number(b.amount)]),
+    ((budgets ?? []) as (Budget & { currency: string })[]).map((b) => [
+      b.category_id,
+      Number(b.amount),
+    ]),
   );
-  const cf = computeCashflow(
-    (txns ?? []) as Transaction[],
-    categories,
-    rates,
-    displayCurrency,
-  );
+  const cf = computeCashflowPerCurrency((txns ?? []) as Transaction[], categories).get(ccy);
 
   const incomeCats = categories.filter((c) => c.kind === "income");
   const expenseCats = categories.filter(
@@ -58,6 +62,7 @@ export default async function BudgetPage({
   );
 
   function actualFor(c: Category): number {
+    if (!cf) return 0;
     return c.kind === "income"
       ? (cf.incomeByCategory.get(c.id) ?? 0)
       : (cf.expenseByCategory.get(c.id) ?? 0);
@@ -76,13 +81,24 @@ export default async function BudgetPage({
         title={monthLabel(month)}
         right={
           <div className="flex items-center gap-1.5">
-            <Link href={`/budget?month=${prev}`} className={buttonCls("secondary", "sm")}>
+            {currencies.length > 1 ? (
+              <Segmented
+                options={currencies.map((c) => ({
+                  value: c,
+                  label: c === "ILS" ? "₪ ILS" : c === "USD" ? "$ USD" : c,
+                }))}
+                value={ccy}
+                hrefBase={`/budget?month=${monthKey}`}
+                param="ccy"
+              />
+            ) : null}
+            <Link href={`/budget?month=${prev}&ccy=${ccy}`} className={buttonCls("secondary", "sm")}>
               <ChevronLeft size={14} />
             </Link>
-            <Link href="/budget" className={buttonCls("secondary", "sm")}>
+            <Link href={`/budget?ccy=${ccy}`} className={buttonCls("secondary", "sm")}>
               Today
             </Link>
-            <Link href={`/budget?month=${next}`} className={buttonCls("secondary", "sm")}>
+            <Link href={`/budget?month=${next}&ccy=${ccy}`} className={buttonCls("secondary", "sm")}>
               <ChevronRight size={14} />
             </Link>
           </div>
@@ -97,17 +113,17 @@ export default async function BudgetPage({
                 key={c.id}
                 category={c}
                 month={month}
+                currency={ccy}
                 planned={budgetByCat.get(c.id) ?? 0}
                 actual={actualFor(c)}
-                currency={displayCurrency}
                 isIncome
               />
             ))}
             <TotalRow
               label="Total income"
               planned={plannedIncome}
-              actual={cf.income}
-              currency={displayCurrency}
+              actual={cf?.income ?? 0}
+              currency={ccy}
             />
           </Card>
 
@@ -130,9 +146,9 @@ export default async function BudgetPage({
                     key={c.id}
                     category={c}
                     month={month}
+                    currency={ccy}
                     planned={budgetByCat.get(c.id) ?? 0}
                     actual={actualFor(c)}
-                    currency={displayCurrency}
                   />
                 ))}
                 {zero.length > 0 ? (
@@ -145,9 +161,9 @@ export default async function BudgetPage({
                         key={c.id}
                         category={c}
                         month={month}
+                        currency={ccy}
                         planned={0}
                         actual={0}
-                        currency={displayCurrency}
                       />
                     ))}
                   </details>
@@ -156,7 +172,7 @@ export default async function BudgetPage({
                   label={`Total ${bucket.label.toLowerCase()}`}
                   planned={planned}
                   actual={actual}
-                  currency={displayCurrency}
+                  currency={ccy}
                 />
               </Card>
             );
@@ -166,8 +182,8 @@ export default async function BudgetPage({
             <TotalRow
               label="Total expenses"
               planned={plannedExpenses}
-              actual={cf.expense}
-              currency={displayCurrency}
+              actual={cf?.expense ?? 0}
+              currency={ccy}
               big
             />
           </Card>
@@ -177,15 +193,17 @@ export default async function BudgetPage({
           <Card className="bg-pos-soft/60">
             <div className="px-5 py-5 text-center">
               <div className="tnum text-[24px] font-semibold text-pos">
-                {fmtMoney(leftToBudget, displayCurrency, { decimals: false })}
+                {fmtMoney(leftToBudget, ccy, { decimals: false })}
               </div>
-              <div className="text-[12.5px] font-medium text-pos">Left to budget</div>
+              <div className="text-[12.5px] font-medium text-pos">
+                Left to budget ({ccy})
+              </div>
             </div>
           </Card>
           <p className="mt-3 px-1 text-[12px] leading-relaxed text-faint">
-            Budgets are in {displayCurrency}. Spending in the other currency
-            converts at the day&apos;s rate. Set a planned amount by clicking
-            a number in the Planned column.
+            {ccy === "ILS" ? "Shekel" : "Dollar"} budgets track{" "}
+            {ccy === "ILS" ? "shekel" : "dollar"} spending only — no currency
+            mixing. Switch with the toggle above.
           </p>
         </div>
       </div>
@@ -207,16 +225,16 @@ function SectionHeader({ label }: { label: string }) {
 function BudgetRow({
   category,
   month,
+  currency,
   planned,
   actual,
-  currency,
   isIncome = false,
 }: {
   category: Category;
   month: string;
+  currency: string;
   planned: number;
   actual: number;
-  currency: string;
   isIncome?: boolean;
 }) {
   const remaining = planned - actual;
@@ -229,7 +247,12 @@ function BudgetRow({
           {category.name}
         </span>
         <div className="text-right">
-          <BudgetInput month={month} categoryId={category.id} value={planned} />
+          <BudgetInput
+            month={month}
+            categoryId={category.id}
+            currency={currency}
+            value={planned}
+          />
         </div>
         <span className="tnum text-right text-[13px]">
           {fmtMoney(actual, currency, { decimals: false })}
