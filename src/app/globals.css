@@ -1,26 +1,69 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Peanut design tokens — captured from Monarch's live app:
+   body #F6F5F3, ink #22201D, white cards r12 with 0 2px 4px rgba(34,32,29,.1),
+   orange CTA, green positives. Font: Inter (stand-in for Monarch's "Oracle"). */
+@theme {
+  --color-bg: #f6f5f3;
+  --color-card: #ffffff;
+  --color-ink: #22201d;
+  --color-ink-soft: #55534e;
+  --color-muted: #7d7b76;
+  --color-faint: #a5a39e;
+  --color-line: #eae8e3;
+  --color-line-strong: #dcdad4;
+  --color-hover: #efedea;
+  --color-active: #e9e7e2;
+  --color-accent: #ee6a3c;
+  --color-accent-strong: #de5a2c;
+  --color-accent-soft: #fdeee7;
+  --color-pos: #1a9a5c;
+  --color-pos-soft: #d9eee1;
+  --color-neg: #d94f45;
+  --color-neg-soft: #fbe5e3;
+  --color-chart-1: #63b3d9;
+  --color-chart-2: #1a9a5c;
+  --color-chart-3: #ee6a3c;
+  --color-chart-4: #8f7ad6;
+  --color-chart-5: #e8b93c;
+  --color-chart-6: #d96aa8;
+  --color-chart-7: #4f8f8b;
+  --color-chart-8: #a3a19e;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --radius-card: 12px;
+  --shadow-card: 0 2px 4px rgba(34, 32, 29, 0.1);
+  --shadow-pop: 0 4px 16px rgba(34, 32, 29, 0.14);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }

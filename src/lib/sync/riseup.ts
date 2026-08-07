@@ -1,0 +1,217 @@
+import "server-only";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+const BASE = "https://input.riseup.co.il/api/external";
+
+interface RiseupTxn {
+  transactionId: string;
+  businessName: string | null;
+  transactionDate: string;
+  billingDate?: string | null;
+  cashflowDate?: string | null;
+  amount: number; // always positive
+  isIncome: boolean;
+  categoryLabel?: string | null;
+  categoryType?: string | null;
+  actualType?: string | null;
+  accountNumberHash?: string | null;
+  accountNickname?: string | null;
+  source?: string | null;
+  sourceType?: string | null; // creditCard | checkingAccount
+  isInstallment?: boolean;
+  installmentNumber?: number | null;
+  totalNumberOfInstallments?: number | null;
+  isPostponed?: boolean;
+}
+
+async function riseupGet(token: string, path: string): Promise<unknown> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (res.status === 401) throw new Error("RISEUP_TOKEN_EXPIRED");
+  if (res.status === 429) {
+    const retry = res.headers.get("Retry-After") ?? "?";
+    throw new Error(`RISEUP_RATE_LIMITED (retry after ${retry}s)`);
+  }
+  if (!res.ok) throw new Error(`RiseUp ${path}: HTTP ${res.status}`);
+  return res.json();
+}
+
+function monthStr(offset: number): string {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Pull transactions for the current + previous cashflow months
+ * (Israeli card billing lands retroactively), or a deeper backfill on
+ * first sync. Accounts are derived from accountNumberHash — the official
+ * API has no balances endpoint yet, so balances stay manual.
+ */
+export async function syncRiseup(
+  connectionId: string,
+  opts: { backfillMonths?: number } = {},
+): Promise<{ upserted: number; months: number }> {
+  const admin = createAdminClient();
+
+  const { data: conn, error: connErr } = await admin
+    .from("connections")
+    .select("*")
+    .eq("id", connectionId)
+    .single();
+  if (connErr || !conn) throw new Error("Connection not found");
+
+  const { data: token, error: vaultErr } = await admin.rpc(
+    "peanut_vault_get_secret",
+    { p_name: `conn_${connectionId}` },
+  );
+  if (vaultErr || !token) throw new Error("Missing RiseUp token in vault");
+
+  const spaceId = conn.space_id as string;
+  const back = opts.backfillMonths ?? (conn.last_synced_at ? 0 : 12);
+  const offsets = Array.from({ length: back + 2 }, (_, i) => -i); // 0, -1, ...
+
+  // Existing riseup accounts + categories + aliases for this space.
+  const [{ data: accounts }, { data: categories }, { data: aliases }] =
+    await Promise.all([
+      admin
+        .from("accounts")
+        .select("id, external_id")
+        .eq("connection_id", connectionId),
+      admin.from("categories").select("id, name, kind").eq("space_id", spaceId),
+      admin
+        .from("category_aliases")
+        .select("source_name, category_id")
+        .eq("space_id", spaceId)
+        .eq("source", "riseup"),
+    ]);
+  const accountByHash = new Map(
+    (accounts ?? []).map((a) => [a.external_id as string, a.id as string]),
+  );
+  const aliasMap = new Map(
+    (aliases ?? []).map((a) => [a.source_name as string, a.category_id as string]),
+  );
+  const categoryByName = new Map(
+    (categories ?? []).map((c) => [c.name as string, c.id as string]),
+  );
+
+  let upserted = 0;
+  for (const off of offsets) {
+    const month = monthStr(off);
+    const payload = (await riseupGet(
+      String(token),
+      `/transactions?cashflowMonth=${month}`,
+    )) as { transactions?: RiseupTxn[] } | RiseupTxn[];
+    const txns = Array.isArray(payload)
+      ? payload
+      : (payload.transactions ?? []);
+
+    for (const t of txns) {
+      const hash = t.accountNumberHash ?? "unknown";
+      // Ensure the account exists.
+      let accountId = accountByHash.get(hash);
+      if (!accountId) {
+        const isCard = t.sourceType === "creditCard";
+        const { data: acc, error } = await admin
+          .from("accounts")
+          .insert({
+            space_id: spaceId,
+            connection_id: connectionId,
+            source: "riseup",
+            external_id: hash,
+            name:
+              t.accountNickname ||
+              `${t.source ?? "RiseUp"} ${isCard ? "card" : "account"} ${hash.slice(0, 4)}`,
+            institution_name: t.source ?? "RiseUp",
+            type: isCard ? "credit" : "checking",
+            currency: "ILS",
+            is_liability: isCard,
+          })
+          .select("id")
+          .single();
+        if (error) throw new Error(`Create account: ${error.message}`);
+        accountId = acc.id as string;
+        accountByHash.set(hash, accountId);
+      }
+
+      // Resolve category from RiseUp's Hebrew label.
+      let categoryId: string | null = null;
+      const label = t.categoryLabel?.trim();
+      if (label) {
+        categoryId = aliasMap.get(label) ?? null;
+        if (!categoryId) {
+          categoryId = categoryByName.get(label) ?? null;
+          if (!categoryId) {
+            const { data: cat } = await admin
+              .from("categories")
+              .insert({
+                space_id: spaceId,
+                group: "RiseUp",
+                name: label,
+                kind: t.isIncome ? "income" : "expense",
+                icon: "🏷️",
+              })
+              .select("id")
+              .single();
+            categoryId = (cat?.id as string) ?? null;
+            if (categoryId) categoryByName.set(label, categoryId);
+          }
+          if (categoryId) {
+            await admin.from("category_aliases").upsert(
+              {
+                space_id: spaceId,
+                source: "riseup",
+                source_name: label,
+                category_id: categoryId,
+              },
+              { onConflict: "space_id,source,source_name" },
+            );
+            aliasMap.set(label, categoryId);
+          }
+        }
+      }
+
+      const { error: upErr } = await admin.from("transactions").upsert(
+        {
+          space_id: spaceId,
+          account_id: accountId,
+          connection_id: connectionId,
+          source: "riseup",
+          external_id: t.transactionId,
+          date: t.transactionDate.slice(0, 10),
+          name: t.businessName ?? "Unknown",
+          original_name: t.businessName,
+          amount: t.isIncome ? Math.abs(t.amount) : -Math.abs(t.amount),
+          currency: "ILS",
+          category_id: categoryId,
+          categorized_by: categoryId ? "provider" : "none",
+          raw: t as unknown as Record<string, unknown>,
+        },
+        { onConflict: "connection_id,external_id" },
+      );
+      if (upErr) throw new Error(`Upsert txn: ${upErr.message}`);
+      upserted++;
+    }
+  }
+
+  await admin
+    .from("connections")
+    .update({ status: "active", error: null, last_synced_at: new Date().toISOString() })
+    .eq("id", connectionId);
+
+  return { upserted, months: offsets.length };
+}
+
+export async function markRiseupError(connectionId: string, message: string) {
+  const admin = createAdminClient();
+  await admin
+    .from("connections")
+    .update({
+      status: message === "RISEUP_TOKEN_EXPIRED" ? "error" : "active",
+      error: message,
+    })
+    .eq("id", connectionId);
+}
