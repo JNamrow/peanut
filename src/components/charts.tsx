@@ -55,6 +55,7 @@ export function NetWorthChart({
           tickLine={false}
           axisLine={false}
           width={52}
+          domain={["auto", "auto"]}
           tickFormatter={(v: number) => compact(v, currency)}
         />
         <Tooltip
@@ -68,6 +69,7 @@ export function NetWorthChart({
           }}
         />
         <Area
+          isAnimationActive={false}
           type="monotone"
           dataKey="value"
           stroke="#63b3d9"
@@ -112,8 +114,8 @@ export function TrendBars({
             boxShadow: "0 4px 16px rgba(34,32,29,.14)",
           }}
         />
-        <Bar dataKey="income" fill="#1a9a5c" radius={[3, 3, 0, 0]} maxBarSize={26} />
-        <Bar dataKey="expense" fill="#d94f45" radius={[3, 3, 0, 0]} maxBarSize={26} />
+        <Bar isAnimationActive={false} dataKey="income" fill="#1a9a5c" radius={[3, 3, 0, 0]} maxBarSize={26} />
+        <Bar isAnimationActive={false} dataKey="expense" fill="#d94f45" radius={[3, 3, 0, 0]} maxBarSize={26} />
       </BarChart>
     </ResponsiveContainer>
   );

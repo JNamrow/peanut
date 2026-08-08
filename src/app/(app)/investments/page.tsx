@@ -19,6 +19,7 @@ import {
 } from "@/components/ui";
 import {
   BENCHMARKS,
+  backtestHoldings,
   getBenchmarkCloses,
   isBenchmarkKey,
   type BenchmarkKey,
@@ -146,12 +147,31 @@ export default async function InvestmentsPage({
     holdingsByAccount.set(h.account_id, arr);
   }
 
+  // Monarch-style backtest: price TODAY's holdings backwards with market
+  // history (their "Backtested performance"). USD symbols only.
+  let backtested: { date: string; pct: number }[] | null = null;
+  const usdSymbolHoldings = holdings
+    .filter(
+      (h) => h.symbol && Number(h.quantity) > 0 && (h.currency ?? "USD") === "USD",
+    )
+    .map((h) => ({ symbol: h.symbol as string, quantity: Number(h.quantity) }));
+  if (tab === "holdings" && usdSymbolHoldings.length > 0) {
+    const bt = await backtestHoldings(
+      usdSymbolHoldings,
+      since.toISOString().slice(0, 10),
+    );
+    if (bt && bt.length > 1) backtested = bt;
+  }
+
   // Benchmark % over the same window for every benchmark (comparison
   // cells) + the selected one as a chart overlay. USD only.
   const benchStats: { key: BenchmarkKey; label: string; pct: number }[] = [];
   let benchSeries: PerfSeries | null = null;
   if (tab === "holdings") {
-    const usd = seriesByCcy.get("USD") ?? [];
+    const snapUsd = seriesByCcy.get("USD") ?? [];
+    const usd =
+      backtested ??
+      snapUsd.map((p) => ({ date: p.date, pct: 0 })); // dates only below
     if (usd.length > 1) {
       const startDate = usd[0].date;
       const endDate = usd[usd.length - 1].date;
@@ -274,21 +294,31 @@ export default async function InvestmentsPage({
             const rawSeries = seriesByCcy.get(ccy) ?? [];
             // One snapshot day still gets a chart: pad it flat across the range.
             const series = padSeries(rawSeries, days);
-            const hasRealHistory = rawSeries.length > 1;
+            const backtest = ccy === "USD" ? backtested : null;
+            const hasRealHistory = rawSeries.length > 1 || backtest != null;
             const total = totalsByCcy.get(ccy)?.net ?? 0;
             const start = series.length ? series[0].value : total;
             const change = total - start;
             // A padded (flat) window is 0% change by definition.
-            const changePct = hasRealHistory
-              ? start !== 0
-                ? (change / Math.abs(start)) * 100
-                : null
-              : series.length > 1
-                ? 0
-                : null;
+            const changePct = backtest
+              ? backtest[backtest.length - 1].pct
+              : rawSeries.length > 1
+                ? start !== 0
+                  ? (change / Math.abs(start)) * 100
+                  : null
+                : series.length > 1
+                  ? 0
+                  : null;
 
             const perf: PerfSeries[] = [];
-            if (series.length > 1 && series[0].value !== 0) {
+            if (backtest) {
+              perf.push({
+                name: "Your Portfolio",
+                color: PORTFOLIO_COLOR,
+                points: backtest,
+              });
+              if (benchSeries) perf.push(benchSeries);
+            } else if (series.length > 1 && series[0].value !== 0) {
               const base = series[0].value;
               perf.push({
                 name: "Your Portfolio",
@@ -298,10 +328,12 @@ export default async function InvestmentsPage({
                   pct: ((p.value - base) / Math.abs(base)) * 100,
                 })),
               });
-              if (ccy === "USD" && hasRealHistory && benchSeries)
+              if (ccy === "USD" && rawSeries.length > 1 && benchSeries)
                 perf.push(benchSeries);
             }
             const ccyAccounts = invAccounts.filter((a) => a.currency === ccy);
+            const noHoldingsHint =
+              ccy === "USD" && usdSymbolHoldings.length === 0;
 
             return (
               <section key={ccy} className="flex flex-col gap-4">
@@ -336,6 +368,13 @@ export default async function InvestmentsPage({
                         History starts today.
                       </p>
                     )}
+                    {noHoldingsHint ? (
+                      <p className="px-3 pb-2 text-[12px] text-faint">
+                        Rich backtested history (like Monarch&apos;s) unlocks
+                        the moment Robinhood shares its holdings — approve the
+                        Investments product at dashboard.plaid.com, then Sync.
+                      </p>
+                    ) : null}
                   </div>
                 </Card>
 

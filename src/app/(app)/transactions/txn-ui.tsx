@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, EyeOff, Funnel, Plus, Search, X } from "lucide-react";
+import { ChevronRight, EyeOff, Funnel, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonCls, inputCls, selectCls } from "@/components/ui";
 import { CategoryPicker, useDismiss } from "@/components/category-picker";
@@ -517,13 +517,13 @@ function TxnRow({
             </button>
             <button
               type="button"
-              title={`Search “${name}”`}
+              title={`All transactions from “${name}”`}
               onClick={() =>
                 router.push(`/transactions?q=${encodeURIComponent(name)}`)
               }
               className="invisible shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink group-hover:visible"
             >
-              <Search size={12.5} />
+              <ChevronRight size={13.5} />
             </button>
           </div>
           {txn.pending ? (

@@ -43,12 +43,7 @@ function parseCsv(text: string): DailyClose[] {
   return rows;
 }
 
-/** Daily closes for a benchmark since a date (inclusive). Errors -> []. */
-export async function getBenchmarkCloses(
-  key: BenchmarkKey,
-  since: string,
-): Promise<DailyClose[]> {
-  const symbol = BENCHMARKS[key].stooq;
+async function fetchCloses(symbol: string, since: string): Promise<DailyClose[]> {
   const cached = closeCache.get(symbol);
   if (cached && Date.now() - cached.at < TTL_MS) {
     return cached.rows.filter((r) => r.date >= since);
@@ -67,4 +62,60 @@ export async function getBenchmarkCloses(
     if (cached) return cached.rows.filter((r) => r.date >= since);
     return [];
   }
+}
+
+/** Daily closes for a benchmark since a date (inclusive). Errors -> []. */
+export async function getBenchmarkCloses(
+  key: BenchmarkKey,
+  since: string,
+): Promise<DailyClose[]> {
+  return fetchCloses(BENCHMARKS[key].stooq, since);
+}
+
+/**
+ * Monarch-style backtest: price TODAY'S holdings backwards with market
+ * history. Returns a daily % -change series, or null when fewer than two
+ * holdings' prices resolve.
+ */
+export async function backtestHoldings(
+  holdings: { symbol: string; quantity: number }[],
+  since: string,
+): Promise<{ date: string; pct: number }[] | null> {
+  const bySymbol = new Map<string, number>();
+  for (const h of holdings) {
+    if (!h.symbol || !h.quantity) continue;
+    const s = h.symbol.trim().toLowerCase();
+    if (!/^[a-z.]{1,6}$/.test(s)) continue;
+    bySymbol.set(s, (bySymbol.get(s) ?? 0) + h.quantity);
+  }
+  const symbols = [...bySymbol.keys()].slice(0, 15);
+  if (symbols.length === 0) return null;
+
+  const seriesList = await Promise.all(
+    symbols.map((s) => fetchCloses(`${s}.us`, since)),
+  );
+  const priced = symbols
+    .map((s, i) => ({ symbol: s, qty: bySymbol.get(s)!, closes: seriesList[i] }))
+    .filter((x) => x.closes.length > 1);
+  if (priced.length === 0) return null;
+
+  // Use the union of trading days; carry each symbol's last price forward.
+  const days = [...new Set(priced.flatMap((p) => p.closes.map((c) => c.date)))].sort();
+  const values: { date: string; value: number }[] = [];
+  const cursors = priced.map(() => 0);
+  const lastPrice = priced.map((p) => p.closes[0].close);
+  for (const day of days) {
+    let total = 0;
+    priced.forEach((p, i) => {
+      while (cursors[i] < p.closes.length && p.closes[cursors[i]].date <= day) {
+        lastPrice[i] = p.closes[cursors[i]].close;
+        cursors[i]++;
+      }
+      total += p.qty * lastPrice[i];
+    });
+    values.push({ date: day, value: total });
+  }
+  const base = values[0]?.value;
+  if (!base || base <= 0) return null;
+  return values.map((v) => ({ date: v.date, pct: ((v.value - base) / base) * 100 }));
 }

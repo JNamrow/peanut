@@ -69,6 +69,7 @@ export function DualChart({
             tickLine={false}
             axisLine={false}
             width={52}
+            domain={["auto", "auto"]}
             tickFormatter={(v: number) => fmtMoney(v, "ILS", { compact: true })}
           />
         ) : null}
@@ -80,6 +81,7 @@ export function DualChart({
             tickLine={false}
             axisLine={false}
             width={52}
+            domain={["auto", "auto"]}
             tickFormatter={(v: number) => fmtMoney(v, "USD", { compact: true })}
           />
         ) : null}
@@ -98,6 +100,7 @@ export function DualChart({
         />
         {hasIls ? (
           <Line
+            isAnimationActive={false}
             yAxisId="ils"
             type="monotone"
             dataKey="ils"
@@ -109,6 +112,7 @@ export function DualChart({
         ) : null}
         {hasUsd ? (
           <Line
+            isAnimationActive={false}
             yAxisId="usd"
             type="monotone"
             dataKey="usd"
