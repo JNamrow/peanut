@@ -82,20 +82,54 @@ export function LinkedBankSelect({
 export function DeleteAccountButton({ accountId }: { accountId: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const [open, setOpen] = useState(false);
   return (
-    <button
-      className={buttonCls("ghost", "sm")}
-      disabled={pending}
-      onClick={() => {
-        if (!confirm("Remove this account? Its history stays in the database.")) return;
-        startTransition(async () => {
-          await deleteAccount(accountId);
-          router.push("/accounts");
-          router.refresh();
-        });
-      }}
-    >
-      <Trash2 size={14} /> Remove
-    </button>
+    <>
+      <button
+        className={buttonCls("ghost", "sm")}
+        disabled={pending}
+        onClick={() => setOpen(true)}
+      >
+        <Trash2 size={14} /> Remove
+      </button>
+      {open ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="card w-full max-w-[400px] p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-[16px] font-semibold">Remove this account?</h2>
+            <p className="mt-2 text-[13px] text-muted">
+              It disappears from every list and total. Its transactions and
+              balance history stay in the database, and syncing stops.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className={buttonCls("secondary")}
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="inline-flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-neg px-3.5 text-[13.5px] font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+                disabled={pending}
+                onClick={() =>
+                  startTransition(async () => {
+                    await deleteAccount(accountId);
+                    router.push("/accounts");
+                    router.refresh();
+                  })
+                }
+              >
+                {pending ? "Removing…" : "Remove account"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

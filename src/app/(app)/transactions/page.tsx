@@ -13,12 +13,33 @@ export default async function TransactionsPage({
     account?: string;
     category?: string;
     month?: string;
+    from?: string;
+    to?: string;
     page?: string;
   }>;
 }) {
-  const params = await searchParams;
+  const raw = await searchParams;
   const { supabase, space, displayCurrency, rates } = await getContext();
   const [accounts, categories] = await Promise.all([getAccounts(), getCategories()]);
+
+  // Backcompat: ?month=YYYY-MM translates to its from/to range.
+  let from = raw.from;
+  let to = raw.to;
+  if (raw.month && !from && !to) {
+    from = `${raw.month}-01`;
+    const end = new Date(`${raw.month}-01T00:00:00`);
+    end.setMonth(end.getMonth() + 1);
+    end.setDate(0); // last day of the month
+    to = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+  }
+  const params = {
+    q: raw.q,
+    account: raw.account,
+    category: raw.category,
+    from,
+    to,
+    page: raw.page,
+  };
 
   const page = Math.max(1, Number(params.page ?? 1));
   let query = supabase
@@ -32,12 +53,8 @@ export default async function TransactionsPage({
   if (params.q) query = query.ilike("name", `%${params.q}%`);
   if (params.account) query = query.eq("account_id", params.account);
   if (params.category) query = query.eq("category_id", params.category);
-  if (params.month) {
-    const start = `${params.month}-01`;
-    const end = new Date(`${params.month}-01T00:00:00`);
-    end.setMonth(end.getMonth() + 1);
-    query = query.gte("date", start).lt("date", end.toISOString().slice(0, 10));
-  }
+  if (from) query = query.gte("date", from);
+  if (to) query = query.lte("date", to);
 
   const { data: txns, count } = await query;
 

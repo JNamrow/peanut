@@ -2,13 +2,15 @@
 
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, EyeOff, Funnel, Plus, X } from "lucide-react";
+import { ChevronRight, EyeOff, Funnel, Plus, Search, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { buttonCls, inputCls, selectCls } from "@/components/ui";
 import { CategoryPicker, useDismiss } from "@/components/category-picker";
-import { fmtMoney, longDate, monthLabel } from "@/lib/format";
+import { fmtMoney, longDate, shortDate } from "@/lib/format";
 import type { Account, Category, Transaction } from "@/lib/types";
 import {
   addManualTransaction,
+  renameMerchant,
   setTransactionCategory,
   toggleTransactionHidden,
 } from "../actions";
@@ -20,21 +22,65 @@ function buildQuery(params: Record<string, string | undefined>): string {
   return s ? `?${s}` : "";
 }
 
-function lastMonths(n: number): string[] {
-  const out: string[] = [];
-  const d = new Date();
-  d.setDate(1);
-  for (let i = 0; i < n; i++) {
-    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
-    d.setMonth(d.getMonth() - 1);
-  }
-  return out;
-}
-
 // ------------------------------------------------------------------ filters
 
-type FilterKey = "q" | "account" | "category" | "month";
-type FilterDraft = Record<FilterKey, string>;
+function ymdLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+interface DatePreset {
+  name: string;
+  from: string; // "" = unbounded
+  to: string;
+}
+
+function datePresets(): DatePreset[] {
+  const now = new Date();
+  const today = ymdLocal(now);
+  const daysAgo = (n: number) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - n);
+    return ymdLocal(d);
+  };
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  return [
+    { name: "Last 7 days", from: daysAgo(6), to: today },
+    { name: "Last 14 days", from: daysAgo(13), to: today },
+    { name: "Last 30 days", from: daysAgo(29), to: today },
+    {
+      name: "This month",
+      from: ymdLocal(new Date(y, m, 1)),
+      to: ymdLocal(new Date(y, m + 1, 0)),
+    },
+    {
+      name: "Last month",
+      from: ymdLocal(new Date(y, m - 1, 1)),
+      to: ymdLocal(new Date(y, m, 0)),
+    },
+    { name: "This year", from: `${y}-01-01`, to: `${y}-12-31` },
+    { name: "Last year", from: `${y - 1}-01-01`, to: `${y - 1}-12-31` },
+    { name: "All time", from: "", to: "" },
+  ];
+}
+
+function rangeChipLabel(
+  presets: DatePreset[],
+  from?: string,
+  to?: string,
+): string {
+  if (from && to) {
+    const hit = presets.find((p) => p.from === from && p.to === to);
+    if (hit) return hit.name;
+    return `${shortDate(from)} – ${shortDate(to)}`;
+  }
+  if (from) return `From ${shortDate(from)}`;
+  if (to) return `Until ${shortDate(to)}`;
+  return "All time";
+}
+
+type FilterKey = "q" | "account" | "category" | "range";
+type FilterDraft = { q: string; account: string; category: string; from: string; to: string };
 
 export function TxnFilters({
   accounts,
@@ -54,9 +100,10 @@ export function TxnFilters({
     q: "",
     account: "",
     category: "",
-    month: "",
+    from: "",
+    to: "",
   });
-  const months = useMemo(() => lastMonths(18), []);
+  const presets = useMemo(() => datePresets(), []);
 
   useDismiss(anchorRef, open, () => setOpen(false));
 
@@ -65,12 +112,13 @@ export function TxnFilters({
       q: current.q ?? "",
       account: current.account ?? "",
       category: current.category ?? "",
-      month: current.month ?? "",
+      from: current.from ?? "",
+      to: current.to ?? "",
     });
     setOpen(true);
   }
 
-  function push(next: Record<FilterKey, string | undefined>) {
+  function push(next: Record<string, string | undefined>) {
     router.push(`/transactions${buildQuery(next)}`);
   }
 
@@ -79,7 +127,8 @@ export function TxnFilters({
       q: draft.q.trim() || undefined,
       account: draft.account || undefined,
       category: draft.category || undefined,
-      month: draft.month || undefined,
+      from: draft.from || undefined,
+      to: draft.to || undefined,
     });
     setOpen(false);
   }
@@ -94,7 +143,8 @@ export function TxnFilters({
       q: key === "q" ? undefined : current.q,
       account: key === "account" ? undefined : current.account,
       category: key === "category" ? undefined : current.category,
-      month: key === "month" ? undefined : current.month,
+      from: key === "range" ? undefined : current.from,
+      to: key === "range" ? undefined : current.to,
     });
   }
 
@@ -111,7 +161,12 @@ export function TxnFilters({
       label: c ? `${c.icon ? `${c.icon} ` : ""}${c.name}` : "Category",
     });
   }
-  if (current.month) chips.push({ key: "month", label: monthLabel(current.month) });
+  if (current.from || current.to) {
+    chips.push({
+      key: "range",
+      label: rangeChipLabel(presets, current.from, current.to),
+    });
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-line pb-3">
@@ -125,7 +180,7 @@ export function TxnFilters({
         </button>
 
         {open ? (
-          <div className="absolute left-0 top-full z-50 mt-1 w-[320px] rounded-card border border-line bg-card p-3 shadow-pop">
+          <div className="absolute left-0 top-full z-50 mt-1 w-[400px] rounded-card border border-line bg-card p-3 shadow-pop">
             <div className="flex flex-col gap-2.5">
               <input
                 value={draft.q}
@@ -166,20 +221,78 @@ export function TxnFilters({
                   </option>
                 ))}
               </select>
-              <select
-                className={`${selectCls} w-full`}
-                value={draft.month}
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, month: e.target.value }))
-                }
-              >
-                <option value="">All time</option>
-                {months.map((m) => (
-                  <option key={m} value={m}>
-                    {monthLabel(m)}
-                  </option>
-                ))}
-              </select>
+              <div className="border-t border-line pt-2.5">
+                <div className="grid grid-cols-[125px_1fr] gap-3">
+                  <div className="flex flex-col items-stretch gap-0.5">
+                    {presets.map((p) => {
+                      const active = draft.from === p.from && draft.to === p.to;
+                      return (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() =>
+                            setDraft((d) => ({ ...d, from: p.from, to: p.to }))
+                          }
+                          className={cn(
+                            "cursor-pointer rounded-md px-2 py-1 text-left text-[12.5px]",
+                            active
+                              ? "font-semibold text-accent"
+                              : "text-ink-soft hover:bg-hover",
+                          )}
+                        >
+                          {p.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-col gap-2.5">
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <label className="text-[11px] font-medium uppercase tracking-wide text-faint">
+                          Start date
+                        </label>
+                        <button
+                          type="button"
+                          className="cursor-pointer text-[11px] text-muted hover:text-ink"
+                          onClick={() => setDraft((d) => ({ ...d, from: "" }))}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <input
+                        type="date"
+                        value={draft.from}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, from: e.target.value }))
+                        }
+                        className={cn(inputCls, "h-8 text-[13px]")}
+                      />
+                    </div>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <label className="text-[11px] font-medium uppercase tracking-wide text-faint">
+                          End date
+                        </label>
+                        <button
+                          type="button"
+                          className="cursor-pointer text-[11px] text-muted hover:text-ink"
+                          onClick={() => setDraft((d) => ({ ...d, to: "" }))}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <input
+                        type="date"
+                        value={draft.to}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, to: e.target.value }))
+                        }
+                        className={cn(inputCls, "h-8 text-[13px]")}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div className="flex items-center justify-between pt-1">
                 <button type="button" className={buttonCls("ghost", "sm")} onClick={clear}>
                   Clear
@@ -340,8 +453,48 @@ function TxnRow({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [localCat, setLocalCat] = useState(txn.category_id ?? "");
+  // Set only after a successful rename, so applyAll renames on sibling rows
+  // still show fresh server data after refresh.
+  const [nameOverride, setNameOverride] = useState<string | null>(null);
+  const merchantRef = useRef<HTMLDivElement>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [applyAll, setApplyAll] = useState(true);
+  const [nameError, setNameError] = useState<string | null>(null);
   const cat = categories.find((c) => c.id === localCat);
   const amount = Number(txn.amount);
+  const name = nameOverride ?? txn.name;
+
+  useDismiss(merchantRef, editorOpen, () => setEditorOpen(false));
+
+  function openEditor() {
+    setDraftName(name);
+    setApplyAll(true);
+    setNameError(null);
+    setEditorOpen(true);
+  }
+
+  function saveName() {
+    const next = draftName.trim();
+    if (!next) {
+      setNameError("Name is required");
+      return;
+    }
+    if (next === name) {
+      setEditorOpen(false);
+      return;
+    }
+    startTransition(async () => {
+      const res = await renameMerchant(txn.id, next, applyAll);
+      if (res.error) {
+        setNameError(res.error);
+        return;
+      }
+      setNameOverride(next);
+      setEditorOpen(false);
+      router.refresh();
+    });
+  }
 
   return (
     <div
@@ -351,20 +504,76 @@ function TxnRow({
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-[13px]">
           {cat?.icon ?? "💸"}
         </span>
-        <div className="min-w-0">
-          <button
-            type="button"
-            title={`Search “${txn.name}”`}
-            onClick={() =>
-              router.push(`/transactions?q=${encodeURIComponent(txn.name)}`)
-            }
-            className="block max-w-full cursor-pointer truncate text-left text-[13.5px] font-medium hover:underline"
-            dir="auto"
-          >
-            {txn.name}
-          </button>
+        <div ref={merchantRef} className="relative min-w-0">
+          <div className="flex min-w-0 items-center gap-1">
+            <button
+              type="button"
+              title="Edit merchant name"
+              onClick={() => (editorOpen ? setEditorOpen(false) : openEditor())}
+              className="min-w-0 cursor-pointer truncate text-left text-[13.5px] font-medium hover:underline"
+              dir="auto"
+            >
+              {name}
+            </button>
+            <button
+              type="button"
+              title={`Search “${name}”`}
+              onClick={() =>
+                router.push(`/transactions?q=${encodeURIComponent(name)}`)
+              }
+              className="invisible shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink group-hover:visible"
+            >
+              <Search size={12.5} />
+            </button>
+          </div>
           {txn.pending ? (
             <span className="text-[11px] font-medium text-accent">Pending</span>
+          ) : null}
+
+          {editorOpen ? (
+            <div className="absolute left-0 top-full z-50 mt-1 w-[270px] rounded-card border border-line bg-card p-3 shadow-pop">
+              <div className="flex flex-col gap-2.5">
+                <input
+                  autoFocus
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveName();
+                  }}
+                  dir="auto"
+                  className={cn(inputCls, "h-8 text-[13px]")}
+                />
+                <label className="flex cursor-pointer items-center gap-1.5 text-[12.5px] text-ink-soft">
+                  <input
+                    type="checkbox"
+                    checked={applyAll}
+                    onChange={(e) => setApplyAll(e.target.checked)}
+                    className="accent-accent"
+                  />
+                  Apply to all transactions with this name
+                </label>
+                {nameError ? (
+                  <p className="text-[12px] text-neg">{nameError}</p>
+                ) : null}
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    className={buttonCls("ghost", "sm")}
+                    onClick={() => setEditorOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className={buttonCls("primary", "sm")}
+                    disabled={pending}
+                    onClick={saveName}
+                  >
+                    {pending ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : null}
         </div>
       </div>

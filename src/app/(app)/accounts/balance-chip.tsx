@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Clock } from "lucide-react";
-import { fmtMoney } from "@/lib/format";
+import { fmtMoney, shortDate } from "@/lib/format";
 import { buttonCls, inputCls } from "@/components/ui";
 import { updateAccountBalance } from "../actions";
 
@@ -17,17 +17,36 @@ export function BalanceChip({
   balance,
   currency,
   type,
+  anchorDate,
 }: {
   accountId: string;
   balance: number | null;
   currency: string;
   type: string;
+  anchorDate?: string | null;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
   const [pending, startTransition] = useTransition();
   const anchorRef = useRef<HTMLSpanElement>(null);
+
+  // Close on outside click / Escape.
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: PointerEvent) {
+      if (!anchorRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   if (type === "credit") {
     if (balance == null) {
@@ -63,6 +82,8 @@ export function BalanceChip({
     });
   }
 
+  const lastSet = anchorDate ? `Set ${shortDate(anchorDate)}` : null;
+
   return (
     <span ref={anchorRef} className="relative" onClick={stop}>
       {balance == null ? (
@@ -77,43 +98,55 @@ export function BalanceChip({
           Set balance
         </button>
       ) : (
-        <button
-          className="tnum cursor-pointer rounded-md px-1 text-[13.5px] font-medium hover:bg-active"
-          title="Click to correct the balance"
-          onClick={(e) => {
-            stop(e);
-            setValue(String(balance));
-            setOpen((v) => !v);
-          }}
-        >
-          {fmtMoney(Number(balance), currency)}
-        </button>
+        <span className="flex flex-col items-end">
+          <button
+            className="tnum cursor-pointer rounded-md px-1 text-[13.5px] font-medium hover:bg-active"
+            title={`Click to correct the balance${lastSet ? ` — ${lastSet.toLowerCase()}` : ""}`}
+            onClick={(e) => {
+              stop(e);
+              setValue(String(balance));
+              setOpen((v) => !v);
+            }}
+          >
+            {fmtMoney(Number(balance), currency)}
+          </button>
+          {lastSet ? (
+            <span className="text-[10.5px] text-faint">{lastSet}</span>
+          ) : null}
+        </span>
       )}
       {open ? (
         <span
-          className="absolute right-0 top-full z-50 mt-1 flex w-[220px] gap-1.5 rounded-card border border-line bg-card p-2 shadow-pop"
+          className="absolute right-0 top-full z-50 mt-1 flex w-[230px] flex-col gap-1.5 rounded-card border border-line bg-card p-2 shadow-pop"
           onClick={stop}
         >
-          <input
-            autoFocus
-            type="number"
-            step="0.01"
-            value={value}
-            placeholder={`Balance (${currency})`}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") save(e);
-              if (e.key === "Escape") setOpen(false);
-            }}
-            className={`${inputCls} h-8`}
-          />
-          <button
-            className={buttonCls("primary", "sm")}
-            disabled={pending}
-            onClick={save}
-          >
-            {pending ? "…" : "Save"}
-          </button>
+          <span className="flex gap-1.5">
+            <input
+              autoFocus
+              type="number"
+              step="0.01"
+              value={value}
+              placeholder={`Balance (${currency})`}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") save(e);
+                if (e.key === "Escape") setOpen(false);
+              }}
+              className={`${inputCls} h-8`}
+            />
+            <button
+              className={buttonCls("primary", "sm")}
+              disabled={pending}
+              onClick={save}
+            >
+              {pending ? "…" : "Save"}
+            </button>
+          </span>
+          {lastSet ? (
+            <span className="px-0.5 text-[11px] text-faint">
+              {lastSet}. Saving re-anchors from today.
+            </span>
+          ) : null}
         </span>
       ) : null}
     </span>

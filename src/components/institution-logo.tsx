@@ -58,14 +58,16 @@ export function InstitutionLogo({
   className?: string;
 }) {
   const domain = domainFor(institution);
-  const [stage, setStage] = useState(0); // 0=google 1=icon.horse 2=letter
+  // icon.horse first: it serves apple-touch icons (the real brand mark),
+  // falling back to Google's favicon service, then a letter monogram.
+  const [stage, setStage] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const initial = (fallback ?? institution ?? "?").slice(0, 1).toUpperCase();
   const src =
     stage === 0 && domain
-      ? `https://www.google.com/s2/favicons?domain=${domain}&sz=128`
+      ? `https://icon.horse/icon/${domain}`
       : stage === 1 && domain
-        ? `https://icon.horse/icon/${domain}`
+        ? `https://www.google.com/s2/favicons?domain=${domain}&sz=128`
         : null;
   return (
     <span

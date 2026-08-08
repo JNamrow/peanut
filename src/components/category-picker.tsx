@@ -26,6 +26,27 @@ const SWATCHES = [
   "#a3a19e",
 ];
 
+const EMOJIS = [
+  "🍏", "🍽️", "☕️", "🛒", "🏠", "🏡", "🔨", "⚡️",
+  "💧", "🌐", "📱", "📶", "💻", "🚗", "⛽️", "🅿️",
+  "🚌", "🚕", "✈️", "🏝️", "🎬", "🎮", "🎁", "🎗️",
+  "🕍", "💊", "🏥", "🦷", "💪", "👕", "🛍️", "🖥️",
+  "🪑", "👶", "🏫", "⚽️", "🎓", "📚", "💵", "💰",
+  "💸", "🪙", "🏦", "🏧", "💳", "🧾", "☂️", "⚖️",
+  "🔁", "➡️", "⬅️", "📈", "🐶", "😜", "👑", "🎯",
+  "💲", "❓", "🏷️",
+];
+
+/** Compare emojis ignoring variation selectors (☕ vs ☕️). */
+function sameEmoji(a: string, b: string) {
+  return a.replace(/\uFE0F/g, "") === b.replace(/\uFE0F/g, "");
+}
+
+/** 22 hex ≈ 13% alpha tint of the category color. */
+function tint(color: string) {
+  return color + "22";
+}
+
 /** Close a popover on outside click or Escape. Shared by picker + filters. */
 export function useDismiss(
   ref: RefObject<HTMLElement | null>,
@@ -84,13 +105,39 @@ export function CategoryPicker({
   const [patched, setPatched] = useState<Record<string, Partial<Category>>>({});
   const [saving, startSaving] = useTransition();
 
-  function close() {
-    setOpen(false);
-    setQ("");
+  function closeEdit() {
     setEditingId(null);
     setEditError(null);
   }
-  useDismiss(rootRef, open, close);
+
+  function close() {
+    setOpen(false);
+    setQ("");
+    closeEdit();
+  }
+
+  // Outside click closes both panels; Escape closes the edit panel first,
+  // then the dropdown. (Not useDismiss: that hook can't order Escape.)
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        close();
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      if (editingId !== null) closeEdit();
+      else close();
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editingId]);
 
   useEffect(() => {
     if (open) searchRef.current?.focus();
@@ -104,6 +151,7 @@ export function CategoryPicker({
     [categories, patched],
   );
   const current = cats.find((c) => c.id === value);
+  const editing = editingId ? cats.find((c) => c.id === editingId) : undefined;
 
   const groups = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -152,8 +200,7 @@ export function CategoryPicker({
         return;
       }
       setPatched((p) => ({ ...p, [categoryId]: patch }));
-      setEditingId(null);
-      setEditError(null);
+      closeEdit();
       router.refresh();
     });
   }
@@ -169,10 +216,20 @@ export function CategoryPicker({
         type="button"
         disabled={disabled}
         onClick={() => (open ? close() : setOpen(true))}
-        className="flex h-7 max-w-full cursor-pointer items-center gap-1.5 truncate rounded-full border border-transparent bg-active px-2.5 text-[12.5px] font-medium outline-none hover:border-line-strong disabled:opacity-50"
+        style={current?.color ? { background: tint(current.color) } : undefined}
+        className={cn(
+          "flex h-7 max-w-full cursor-pointer items-center gap-1.5 truncate rounded-full border border-transparent px-2.5 text-[12.5px] font-medium text-ink outline-none hover:border-line-strong disabled:opacity-50",
+          !current?.color && "bg-active",
+        )}
       >
         {current ? (
           <>
+            {current.color ? (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: current.color }}
+              />
+            ) : null}
             {current.icon ? (
               <span className="text-[12px] leading-none">{current.icon}</span>
             ) : null}
@@ -191,73 +248,89 @@ export function CategoryPicker({
       </button>
 
       {open ? (
-        <div className="absolute left-0 top-full z-50 mt-1 max-h-80 w-72 overflow-y-auto rounded-card border border-line bg-card shadow-pop">
-          <div className="sticky top-0 z-10 border-b border-line bg-card p-2">
-            <div className="relative">
-              <Search
-                size={13}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint"
-              />
-              <input
-                ref={searchRef}
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search categories"
-                dir="auto"
-                className={cn(inputCls, "h-8 pl-7.5 text-[13px]")}
-              />
-            </div>
-          </div>
-
-          <div className="p-1.5">
-            <div className="group/citem flex items-center gap-1 rounded-md hover:bg-hover">
-              <button
-                type="button"
-                onClick={() => pick("")}
-                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 pl-2 pr-2 text-left"
-              >
-                <span className="text-[13px] text-muted">Uncategorized</span>
-                {!value ? (
-                  <Check size={13} className="ml-auto shrink-0 text-accent" />
-                ) : null}
-              </button>
+        <div className="absolute left-0 top-full z-50 mt-1 w-72">
+          <div className="max-h-80 overflow-y-auto rounded-card border border-line bg-card shadow-pop">
+            <div className="sticky top-0 z-10 border-b border-line bg-card p-2">
+              <div className="relative">
+                <Search
+                  size={13}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint"
+                />
+                <input
+                  ref={searchRef}
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search categories"
+                  dir="auto"
+                  className={cn(inputCls, "h-8 pl-7.5 text-[13px]")}
+                />
+              </div>
             </div>
 
-            {groups.length === 0 ? (
-              <p className="px-2 py-4 text-center text-[12.5px] text-muted">
-                No categories match.
-              </p>
-            ) : (
-              groups.map(([group, list]) => (
-                <div key={group}>
-                  <div
-                    className="px-2 pb-0.5 pt-2 text-[11px] font-medium uppercase tracking-wide text-faint"
-                    dir="auto"
-                  >
-                    {group}
-                  </div>
-                  {list.map((c) => (
-                    <div key={c.id}>
-                      <div className="group/citem flex items-center gap-1 rounded-md hover:bg-hover">
+            <div className="p-1.5">
+              <div className="group/citem flex items-center gap-1 rounded-md hover:bg-hover">
+                <button
+                  type="button"
+                  onClick={() => pick("")}
+                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 pl-2 pr-2 text-left"
+                >
+                  <span className="text-[13px] text-muted">Uncategorized</span>
+                  {!value ? (
+                    <Check size={13} className="ml-auto shrink-0 text-accent" />
+                  ) : null}
+                </button>
+              </div>
+
+              {groups.length === 0 ? (
+                <p className="px-2 py-4 text-center text-[12.5px] text-muted">
+                  No categories match.
+                </p>
+              ) : (
+                groups.map(([group, list]) => (
+                  <div key={group}>
+                    <div
+                      className="px-2 pb-0.5 pt-2 text-[11px] font-medium uppercase tracking-wide text-faint"
+                      dir="auto"
+                    >
+                      {group}
+                    </div>
+                    {list.map((c) => (
+                      <div
+                        key={c.id}
+                        className="group/citem flex items-center gap-1 rounded-md hover:bg-hover"
+                      >
                         <button
                           type="button"
                           onClick={() => pick(c.id)}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 pl-2 text-left"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 pl-1.5 text-left"
                         >
-                          <span className="w-4 shrink-0 text-center text-[13px] leading-none">
-                            {c.icon ?? ""}
-                          </span>
-                          <span className="truncate text-[13px]" dir="auto">
-                            {c.name}
-                          </span>
-                          {c.name_he ? (
-                            <span
-                              className="truncate text-[12px] text-muted"
-                              dir="auto"
-                            >
-                              {c.name_he}
+                          <span
+                            className="flex min-w-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-ink"
+                            style={
+                              c.color ? { background: tint(c.color) } : undefined
+                            }
+                          >
+                            {c.color ? (
+                              <span
+                                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                style={{ background: c.color }}
+                              />
+                            ) : null}
+                            <span className="w-4 shrink-0 text-center text-[13px] leading-none">
+                              {c.icon ?? ""}
                             </span>
-                          ) : null}
+                            <span className="truncate text-[13px]" dir="auto">
+                              {c.name}
+                            </span>
+                            {c.name_he ? (
+                              <span
+                                className="truncate text-[12px] text-muted"
+                                dir="auto"
+                              >
+                                {c.name_he}
+                              </span>
+                            ) : null}
+                          </span>
                           {c.id === value ? (
                             <Check
                               size={13}
@@ -272,90 +345,117 @@ export function CategoryPicker({
                             e.stopPropagation();
                             startEdit(c);
                           }}
-                          className="mr-1 shrink-0 cursor-pointer rounded p-1 text-faint opacity-0 hover:text-ink group-hover/citem:opacity-100"
+                          className={cn(
+                            "mr-1 shrink-0 cursor-pointer rounded p-1 text-faint opacity-0 hover:text-ink group-hover/citem:opacity-100",
+                            editingId === c.id && "text-ink opacity-100",
+                          )}
                         >
                           <Ellipsis size={14} />
                         </button>
                       </div>
+                    ))}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
 
-                      {editingId === c.id ? (
-                        <div className="mx-1 mb-1.5 mt-0.5 flex flex-col gap-2 rounded-lg border border-line bg-bg p-2.5">
-                          <div className="flex gap-2">
-                            <input
-                              value={draft.icon}
-                              onChange={(e) =>
-                                setDraft((d) => ({ ...d, icon: e.target.value }))
-                              }
-                              placeholder="🙂"
-                              className={cn(inputCls, "h-8 w-12 px-0 text-center")}
-                            />
-                            <input
-                              value={draft.name}
-                              onChange={(e) =>
-                                setDraft((d) => ({ ...d, name: e.target.value }))
-                              }
-                              placeholder="English name"
-                              className={cn(inputCls, "h-8 flex-1 text-[13px]")}
-                            />
-                          </div>
-                          <input
-                            value={draft.name_he}
-                            onChange={(e) =>
-                              setDraft((d) => ({ ...d, name_he: e.target.value }))
-                            }
-                            placeholder="Hebrew name"
-                            dir="auto"
-                            className={cn(inputCls, "h-8 text-[13px]")}
-                          />
-                          <div className="flex items-center gap-1.5 px-0.5">
-                            {SWATCHES.map((col) => (
-                              <button
-                                key={col}
-                                type="button"
-                                title={col}
-                                onClick={() =>
-                                  setDraft((d) => ({ ...d, color: col }))
-                                }
-                                style={{ background: col }}
-                                className={cn(
-                                  "h-5 w-5 cursor-pointer rounded-full transition-transform hover:scale-110",
-                                  draft.color === col &&
-                                    "ring-2 ring-ink ring-offset-1",
-                                )}
-                              />
-                            ))}
-                          </div>
-                          {editError ? (
-                            <p className="text-[12px] text-neg">{editError}</p>
-                          ) : null}
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              type="button"
-                              className={buttonCls("ghost", "sm")}
-                              onClick={() => {
-                                setEditingId(null);
-                                setEditError(null);
-                              }}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              className={buttonCls("primary", "sm")}
-                              disabled={saving}
-                              onClick={() => saveEdit(c.id)}
-                            >
-                              {saving ? "Saving…" : "Save"}
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
+          {editing ? (
+            <div className="absolute left-full top-0 z-60 ml-1 flex w-[260px] flex-col gap-2.5 rounded-card border border-line bg-card p-2.5 shadow-pop">
+              <input
+                value={draft.name}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, name: e.target.value }))
+                }
+                placeholder="English name"
+                dir="auto"
+                className={cn(inputCls, "h-8 text-[13px]")}
+              />
+              <input
+                value={draft.name_he}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, name_he: e.target.value }))
+                }
+                placeholder="Hebrew name"
+                dir="auto"
+                className={cn(inputCls, "h-8 text-[13px]")}
+              />
+
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-faint">
+                  Icon
+                </div>
+                <div className="grid grid-cols-8 gap-1">
+                  {EMOJIS.map((emoji) => {
+                    const selected =
+                      draft.icon !== "" && sameEmoji(draft.icon, emoji);
+                    return (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() =>
+                          setDraft((d) => ({ ...d, icon: emoji }))
+                        }
+                        className={cn(
+                          "flex h-7 w-full cursor-pointer items-center justify-center rounded-md text-[15px] leading-none hover:bg-hover",
+                          selected && "bg-accent-soft ring-2 ring-accent",
+                        )}
+                      >
+                        {emoji}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-faint">
+                  Color
+                </div>
+                <div className="flex items-center gap-1.5 px-0.5">
+                  {SWATCHES.map((col) => (
+                    <button
+                      key={col}
+                      type="button"
+                      title={col}
+                      onClick={() =>
+                        setDraft((d) => ({
+                          ...d,
+                          color: d.color === col ? null : col,
+                        }))
+                      }
+                      style={{ background: col }}
+                      className={cn(
+                        "h-5 w-5 cursor-pointer rounded-full transition-transform hover:scale-110",
+                        draft.color === col && "ring-2 ring-ink ring-offset-1",
+                      )}
+                    />
                   ))}
                 </div>
-              ))
-            )}
-          </div>
+              </div>
+
+              {editError ? (
+                <p className="text-[12px] text-neg">{editError}</p>
+              ) : null}
+              <div className="flex items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  className={buttonCls("ghost", "sm")}
+                  onClick={closeEdit}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={buttonCls("primary", "sm")}
+                  disabled={saving}
+                  onClick={() => saveEdit(editing.id)}
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

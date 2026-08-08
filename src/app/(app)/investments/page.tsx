@@ -51,6 +51,22 @@ const ALLOC_COLORS = ["#1a9a5c", "#4a6cd4", "#8b4fd4", "#e8763c", "#d96aa8"];
 
 type YieldRows = Awaited<ReturnType<typeof fetchYields>>;
 
+/** A single snapshot still deserves a line: pad it flat across the range. */
+function padSeries(
+  series: { date: string; value: number }[],
+  days: number,
+): { date: string; value: number }[] {
+  if (series.length !== 1) return series;
+  const start = new Date();
+  start.setDate(start.getDate() - days + 1);
+  const startStr = start.toISOString().slice(0, 10);
+  const p = series[0];
+  if (p.date <= startStr) {
+    return [p, { date: new Date().toISOString().slice(0, 10), value: p.value }];
+  }
+  return [{ date: startStr, value: p.value }, p];
+}
+
 function periodLabel(period: number): string {
   return `${Math.floor(period / 100)}-${String(period % 100).padStart(2, "0")}`;
 }
@@ -188,47 +204,47 @@ export default async function InvestmentsPage({
 
   const qs = (t: string) => `/investments?tab=${t}&range=${range}&bench=${bench}`;
   const header = (
-    <PageHeader
-      title="Investments"
-      tabs={
-        <div className="flex items-center gap-1">
-          {TABS.map((t) => (
-            <a
-              key={t.value}
-              href={qs(t.value)}
-              className={`rounded-full px-2.5 py-1 text-[13px] font-medium ${
-                tab === t.value
-                  ? "bg-active text-ink"
-                  : "text-muted hover:text-ink"
-              }`}
-            >
-              {t.label}
-            </a>
-          ))}
-        </div>
-      }
-      right={
-        <>
-          {tab === "holdings" && currencies.includes("USD") ? (
+    <>
+      <PageHeader
+        title="Investments"
+        right={
+          <>
+            {tab === "holdings" && currencies.includes("USD") ? (
+              <Segmented
+                options={(Object.keys(BENCHMARKS) as BenchmarkKey[]).map((k) => ({
+                  value: k,
+                  label: BENCHMARKS[k].label,
+                }))}
+                value={bench}
+                hrefBase={`/investments?tab=holdings&range=${range}`}
+                param="bench"
+              />
+            ) : null}
             <Segmented
-              options={(Object.keys(BENCHMARKS) as BenchmarkKey[]).map((k) => ({
-                value: k,
-                label: BENCHMARKS[k].label,
-              }))}
-              value={bench}
-              hrefBase={`/investments?tab=holdings&range=${range}`}
-              param="bench"
+              options={Object.keys(RANGES).map((r) => ({ value: r, label: r }))}
+              value={range}
+              hrefBase={`/investments?tab=${tab}&bench=${bench}`}
+              param="range"
             />
-          ) : null}
-          <Segmented
-            options={Object.keys(RANGES).map((r) => ({ value: r, label: r }))}
-            value={range}
-            hrefBase={`/investments?tab=${tab}&bench=${bench}`}
-            param="range"
-          />
-        </>
-      }
-    />
+          </>
+        }
+      />
+      <div className="flex items-center gap-1 px-6 pb-1">
+        {TABS.map((t) => (
+          <a
+            key={t.value}
+            href={qs(t.value)}
+            className={`rounded-full px-2.5 py-1 text-[13px] font-medium ${
+              tab === t.value
+                ? "bg-active text-ink"
+                : "text-muted hover:text-ink"
+            }`}
+          >
+            {t.label}
+          </a>
+        ))}
+      </div>
+    </>
   );
 
   if (invAccounts.length === 0) {
@@ -255,13 +271,20 @@ export default async function InvestmentsPage({
         {header}
         <div className="flex flex-col gap-4 px-6 pt-2">
           {currencies.map((ccy) => {
-            const series = seriesByCcy.get(ccy) ?? [];
+            const rawSeries = seriesByCcy.get(ccy) ?? [];
+            // One snapshot day still gets a chart: pad it flat across the range.
+            const series = padSeries(rawSeries, days);
+            const hasRealHistory = rawSeries.length > 1;
             const total = totalsByCcy.get(ccy)?.net ?? 0;
             const start = series.length ? series[0].value : total;
             const change = total - start;
-            const changePct =
-              series.length > 1 && start !== 0
+            // A padded (flat) window is 0% change by definition.
+            const changePct = hasRealHistory
+              ? start !== 0
                 ? (change / Math.abs(start)) * 100
+                : null
+              : series.length > 1
+                ? 0
                 : null;
 
             const perf: PerfSeries[] = [];
@@ -275,7 +298,8 @@ export default async function InvestmentsPage({
                   pct: ((p.value - base) / Math.abs(base)) * 100,
                 })),
               });
-              if (ccy === "USD" && benchSeries) perf.push(benchSeries);
+              if (ccy === "USD" && hasRealHistory && benchSeries)
+                perf.push(benchSeries);
             }
             const ccyAccounts = invAccounts.filter((a) => a.currency === ccy);
 
@@ -293,7 +317,7 @@ export default async function InvestmentsPage({
                   />
                   <div className="grid grid-flow-col auto-cols-fr divide-x divide-line border-y border-line">
                     <PerfCell label="Your Portfolio" pct={changePct} />
-                    {ccy === "USD"
+                    {ccy === "USD" && hasRealHistory
                       ? benchStats.map((b) => (
                           <PerfCell
                             key={b.key}

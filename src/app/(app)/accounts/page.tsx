@@ -281,6 +281,7 @@ export default async function AccountsPage({
                             }
                             currency={a.currency}
                             type={a.type}
+                            anchorDate={a.balance_anchor_date}
                           />
                         </Link>
                       );

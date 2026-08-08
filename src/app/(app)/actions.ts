@@ -56,6 +56,38 @@ export async function addManualTransaction(formData: FormData) {
   revalidatePath("/transactions");
 }
 
+export async function renameMerchant(
+  txnId: string,
+  newName: string,
+  applyAll: boolean,
+): Promise<{ error: string | null }> {
+  const { supabase, space } = await getContext();
+  const name = newName.trim();
+  if (!name) return { error: "Name is required" };
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("id, name")
+    .eq("id", txnId)
+    .single();
+  if (!txn) return { error: "Transaction not found" };
+  if (applyAll) {
+    const { error } = await supabase
+      .from("transactions")
+      .update({ name })
+      .eq("space_id", space.id)
+      .eq("name", txn.name);
+    if (error) return { error: error.message };
+  } else {
+    const { error } = await supabase
+      .from("transactions")
+      .update({ name })
+      .eq("id", txnId);
+    if (error) return { error: error.message };
+  }
+  revalidatePath("/transactions");
+  return { error: null };
+}
+
 // ---------------------------------------------------------------- accounts
 
 export async function addManualAccount(formData: FormData) {
