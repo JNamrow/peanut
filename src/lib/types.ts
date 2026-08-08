@@ -48,7 +48,10 @@ export interface Account {
   balance_anchor_date: string | null;
   forecast_include: boolean;
   forecast_growth_pct: number | null;
-  forecast_contribution: number;
+  forecast_growth_mode: "fixed" | "none" | "variable" | null; // null = default by type
+  forecast_growth_points: { year: number; rate: number }[] | null;
+  forecast_contribution: number; // legacy; no longer read
+
   is_liability: boolean;
   include_in_net_worth: boolean;
   hidden: boolean;

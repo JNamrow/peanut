@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   CartesianGrid,
@@ -12,12 +12,21 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Pencil, Plus, Settings, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  Plus,
+  Settings,
+  Trash2,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtMoney } from "@/lib/format";
 import { buttonCls, Card, CardHeader, PageHeader, inputCls, selectCls } from "@/components/ui";
 import {
   EVENT_TEMPLATES,
+  type ForecastAccountRow,
   type ForecastEvent,
   type ForecastIncome,
   type ForecastMember,
@@ -27,18 +36,21 @@ import {
   addForecastEvent,
   deleteForecastEvent,
   updateAssumptions,
-  updateForecastAccount,
 } from "./forecast-actions";
+import { AccountPanel, type PanelTarget } from "./account-panel";
 
 const ILS_COLOR = "#1a9a5c";
 const USD_COLOR = "#63b3d9";
 const AXIS = { fontSize: 11, fill: "#a5a39e" };
+const ASSET_GROUP_ORDER = ["Cash", "Investments", "Pensions", "Other Assets", "Extra"];
+const LIABILITY_GROUP_ORDER = ["Credit Cards", "Loans", "Other Liabilities"];
 
 interface Settings {
   inflationPct: number;
   returnPct: number;
   useActualExpenses: boolean;
   expensesOverride: Record<string, number | null>;
+  futureValues: "today" | "nominal";
 }
 
 export interface AccountSetting {
@@ -48,13 +60,22 @@ export interface AccountSetting {
   currency: string;
   type: string;
   include: boolean;
-  growthPct: number | null; // null = use the default for the type
+  growthMode: "default" | "fixed" | "none" | "variable";
+  growthPct: number | null;
   defaultGrowthPct: number;
-  contribution: number;
+  growthPoints: { year: number; rate: number }[];
+  splitMode: "percent" | "amount" | null;
+  splitValue: number;
 }
 
-// One side slot, Monarch-style: assumptions or one account's settings.
-type Panel = { kind: "assumptions" } | { kind: "account"; id: string } | null;
+export interface ForecastConfig {
+  splitEnabled: boolean;
+  withdrawalOrder: string[];
+  futureValues: "today" | "nominal";
+}
+
+// One side slot, Monarch-style: assumptions, one account, or a sub-view.
+type Panel = { kind: "assumptions" } | PanelTarget | null;
 
 export function ForecastView({
   result,
@@ -63,6 +84,7 @@ export function ForecastView({
   incomes,
   events,
   accountSettings,
+  config,
   settings,
   actualExpenses,
 }: {
@@ -72,16 +94,37 @@ export function ForecastView({
   incomes: ForecastIncome[];
   events: ForecastEvent[];
   accountSettings: AccountSetting[];
+  config: ForecastConfig;
   settings: Settings;
   actualExpenses: Record<string, number>;
 }) {
   const [tab, setTab] = useState<"accounts" | "cashflow" | "events">("accounts");
   const [panel, setPanel] = useState<Panel>(null);
+  const [lastAccountId, setLastAccountId] = useState<string | null>(null);
   const [eventOpen, setEventOpen] = useState(false);
-  const panelAccount =
-    panel?.kind === "account"
-      ? accountSettings.find((a) => a.id === panel.id)
-      : undefined;
+  // Row-path keys: `${ccy}:assets` / `${ccy}:liab`, `${ccy}:g:${group}`, `${ccy}:b:${accountId}`.
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    for (const ccy of currencies) {
+      s.add(`${ccy}:assets`);
+      for (const row of result.accountRows[ccy] ?? []) s.add(`${ccy}:g:${row.group}`);
+    }
+    return s;
+  });
+
+  function toggleRow(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function openPanel(p: Panel) {
+    if (p?.kind === "account") setLastAccountId(p.id);
+    setPanel(p);
+  }
 
   const now = new Date().getFullYear();
   const chartData = useMemo(() => {
@@ -122,10 +165,7 @@ export function ForecastView({
     return m?.birthYear ? result.retirementYear - m.birthYear : null;
   })();
 
-  const yearCols = useMemo(() => {
-    const all = chartData.map((d) => d.year);
-    return all;
-  }, [chartData]);
+  const yearCols = useMemo(() => chartData.map((d) => d.year), [chartData]);
 
   return (
     <>
@@ -330,11 +370,14 @@ export function ForecastView({
                   <tbody>
                     {currencies.map((ccy) =>
                       tab === "accounts" ? (
-                        <AccountsRows
+                        <NetWorthRows
                           key={ccy}
                           ccy={ccy}
                           result={result}
-                          onOpenSettings={(id) => setPanel({ kind: "account", id })}
+                          futureValues={config.futureValues}
+                          expanded={expanded}
+                          onToggle={toggleRow}
+                          onOpenSettings={(id) => openPanel({ kind: "account", id })}
                           activeId={panel?.kind === "account" ? panel.id : null}
                         />
                       ) : (
@@ -382,7 +425,7 @@ export function ForecastView({
                       <button
                         key={a.id}
                         type="button"
-                        onClick={() => setPanel({ kind: "account", id: a.id })}
+                        onClick={() => openPanel({ kind: "account", id: a.id })}
                         className="flex cursor-pointer items-center gap-1 rounded-full bg-active px-2 py-0.5 hover:text-ink"
                       >
                         {a.name}
@@ -404,10 +447,19 @@ export function ForecastView({
             currencies={currencies}
             onClose={() => setPanel(null)}
           />
-        ) : panelAccount ? (
+        ) : panel ? (
           <AccountPanel
-            key={panelAccount.id}
-            account={panelAccount}
+            key={panel.kind === "account" ? `account:${panel.id}` : panel.kind}
+            kind={panel.kind}
+            account={
+              panel.kind === "account"
+                ? (accountSettings.find((a) => a.id === panel.id) ?? null)
+                : null
+            }
+            lastAccountId={lastAccountId}
+            accounts={accountSettings}
+            config={config}
+            onSwitch={openPanel}
             onClose={() => setPanel(null)}
           />
         ) : null}
@@ -418,191 +470,300 @@ export function ForecastView({
   );
 }
 
-/** One currency block: net-worth total row, then one row per account. */
-function AccountsRows({
+/* --------------------------- Net worth tree --------------------------- */
+
+function fmtRate(pct: number): string {
+  return String(Math.round(pct * 10) / 10);
+}
+
+function InfoDot({ title }: { title: string }) {
+  return (
+    <span title={title} className="cursor-help text-[10px] text-faint">
+      ⓘ
+    </span>
+  );
+}
+
+function Chevron({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink"
+    >
+      {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+    </button>
+  );
+}
+
+/** One currency block: total, Assets/Liabilities sections, groups, accounts, breakdowns. */
+function NetWorthRows({
   ccy,
   result,
+  futureValues,
+  expanded,
+  onToggle,
   onOpenSettings,
   activeId,
 }: {
   ccy: string;
   result: ForecastResult;
+  futureValues: "today" | "nominal";
+  expanded: Set<string>;
+  onToggle: (key: string) => void;
   onOpenSettings: (id: string) => void;
   activeId: string | null;
 }) {
-  const rows = result.byCurrency[ccy] ?? [];
-  const accountRows = result.accountRows[ccy] ?? [];
+  const totals = result.byCurrency[ccy] ?? [];
+  const rows = result.accountRows[ccy] ?? [];
+  const nYears = totals.length || (rows[0]?.series.length ?? 0);
+  const assets = rows.filter((r) => !r.isLiability);
+  const liabilities = rows.filter((r) => r.isLiability);
+
+  function sumSeries(rs: ForecastAccountRow[]): number[] {
+    const out = new Array<number>(nYears).fill(0);
+    for (const r of rs) for (let i = 0; i < nYears; i++) out[i] += r.series[i] ?? 0;
+    return out;
+  }
+
+  function orderedGroups(rs: ForecastAccountRow[], order: string[]): string[] {
+    const present = [...new Set(rs.map((r) => r.group))];
+    return [
+      ...order.filter((g) => present.includes(g)),
+      ...present.filter((g) => !order.includes(g)),
+    ];
+  }
+
+  function breakdownRows(r: ForecastAccountRow): ReactNode[] {
+    const out: ReactNode[] = [];
+    const labelCell = (content: ReactNode) => (
+      <td className="sticky left-0 bg-card py-1 pr-3">
+        <span className="flex items-center gap-1.5 pl-12 text-[12px] text-muted">
+          {content}
+        </span>
+      </td>
+    );
+    out.push(
+      <tr key={`${ccy}:bd:${r.id}:start`} className="border-t border-line">
+        {labelCell("Starting balance")}
+        {r.breakdown.map((b, i) => (
+          <td key={i} className="tnum px-2 py-1 text-right text-[12px] text-muted">
+            {i === 0 ? (
+              <>
+                <InfoDot title="Today's balance." />{" "}
+              </>
+            ) : null}
+            {fmtMoney(b.start, ccy, { compact: true })}
+          </td>
+        ))}
+      </tr>,
+    );
+    if (futureValues === "today") {
+      out.push(
+        <tr key={`${ccy}:bd:${r.id}:inflation`} className="border-t border-line">
+          {labelCell(
+            <>
+              Inflation adjustment{" "}
+              <InfoDot title="Adjusts the starting balance for inflation to show its buying power in today's money." />
+            </>,
+          )}
+          {r.breakdown.map((b, i) => (
+            <td
+              key={i}
+              className={cn(
+                "tnum px-2 py-1 text-right text-[12px]",
+                b.inflation < 0 ? "text-neg" : "text-muted",
+              )}
+            >
+              {i === 0 || b.inflation === 0
+                ? "-"
+                : fmtMoney(b.inflation, ccy, { compact: true })}
+            </td>
+          ))}
+        </tr>,
+      );
+    }
+    if (r.ratePct !== 0) {
+      out.push(
+        <tr key={`${ccy}:bd:${r.id}:growth`} className="border-t border-line">
+          {labelCell(
+            <>
+              Growth <span className="text-[11px]">↗ {fmtRate(r.ratePct)}%</span>
+            </>,
+          )}
+          {r.breakdown.map((b, i) => (
+            <td
+              key={i}
+              className={cn(
+                "tnum px-2 py-1 text-right text-[12px]",
+                b.growth > 0 ? "text-pos" : b.growth < 0 ? "text-neg" : "text-muted",
+              )}
+            >
+              {b.growth === 0 ? "-" : fmtMoney(b.growth, ccy, { compact: true, sign: true })}
+            </td>
+          ))}
+        </tr>,
+      );
+    }
+    if (r.breakdown.some((b) => b.contribution !== 0)) {
+      out.push(
+        <tr key={`${ccy}:bd:${r.id}:contribution`} className="border-t border-line">
+          {labelCell("Contribution")}
+          {r.breakdown.map((b, i) => (
+            <td
+              key={i}
+              className={cn(
+                "tnum px-2 py-1 text-right text-[12px]",
+                b.contribution > 0
+                  ? "text-pos"
+                  : b.contribution < 0
+                    ? "text-neg"
+                    : "text-muted",
+              )}
+            >
+              {b.contribution === 0
+                ? "-"
+                : fmtMoney(b.contribution, ccy, { compact: true, sign: true })}
+            </td>
+          ))}
+        </tr>,
+      );
+    }
+    return out;
+  }
+
+  function accountRowTrs(r: ForecastAccountRow): ReactNode[] {
+    const bdKey = `${ccy}:b:${r.id}`;
+    const bdOpen = expanded.has(bdKey);
+    const out: ReactNode[] = [
+      <tr key={`${ccy}:a:${r.id}`} className="group/frow border-t border-line">
+        <td className="sticky left-0 bg-card py-1 pr-3">
+          <span className="flex items-center gap-1 pl-8">
+            <Chevron open={bdOpen} onClick={() => onToggle(bdKey)} />
+            <span className="truncate" dir="auto">
+              {r.name}
+            </span>
+            {r.id ? (
+              <button
+                type="button"
+                title={`${r.name} forecast settings`}
+                onClick={() => onOpenSettings(r.id!)}
+                className={cn(
+                  "shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink",
+                  activeId === r.id ? "text-ink" : "invisible group-hover/frow:visible",
+                )}
+              >
+                <Settings size={12.5} />
+              </button>
+            ) : null}
+            {r.ratePct !== 0 ? (
+              <span className="shrink-0 text-[11px] text-muted">
+                ↗ {fmtRate(r.ratePct)}%
+              </span>
+            ) : null}
+          </span>
+        </td>
+        {r.series.map((v, i) => (
+          <td key={i} className="tnum px-2 py-1 text-right text-muted">
+            {fmtMoney(v, ccy, { compact: true })}
+          </td>
+        ))}
+      </tr>,
+    ];
+    if (bdOpen) out.push(...breakdownRows(r));
+    return out;
+  }
+
+  function sectionTrs(
+    label: string,
+    sectionKey: string,
+    sectionRows: ForecastAccountRow[],
+    groupOrder: string[],
+  ): ReactNode[] {
+    const open = expanded.has(sectionKey);
+    const out: ReactNode[] = [
+      <tr key={sectionKey} className="border-t border-line">
+        <td className="sticky left-0 bg-card py-1.5 pr-3">
+          <span className="flex items-center gap-1 font-semibold">
+            <Chevron open={open} onClick={() => onToggle(sectionKey)} />
+            {label}
+          </span>
+        </td>
+        {sumSeries(sectionRows).map((v, i) => (
+          <td key={i} className="tnum px-2 py-1.5 text-right font-semibold">
+            {fmtMoney(v, ccy, { compact: true })}
+          </td>
+        ))}
+      </tr>,
+    ];
+    if (!open) return out;
+    for (const group of orderedGroups(sectionRows, groupOrder)) {
+      const groupRows = sectionRows.filter((r) => r.group === group);
+      if (group === "Extra") {
+        // The Extra bucket is its own group-level row; no sub-accounts.
+        for (const r of groupRows) {
+          out.push(
+            <tr key={`${ccy}:extra`} className="border-t border-line">
+              <td className="sticky left-0 bg-card py-1.5 pr-3">
+                <span className="flex items-center gap-1.5 pl-4 font-medium">
+                  <span className="w-[18px] shrink-0" />
+                  Extra savings
+                  <InfoDot title="Savings that are not directed to a specific account." />
+                </span>
+              </td>
+              {r.series.map((v, i) => (
+                <td key={i} className="tnum px-2 py-1.5 text-right font-medium">
+                  {fmtMoney(v, ccy, { compact: true })}
+                </td>
+              ))}
+            </tr>,
+          );
+        }
+        continue;
+      }
+      const groupKey = `${ccy}:g:${group}`;
+      const groupOpen = expanded.has(groupKey);
+      out.push(
+        <tr key={groupKey} className="border-t border-line">
+          <td className="sticky left-0 bg-card py-1.5 pr-3">
+            <span className="flex items-center gap-1 pl-4 font-medium">
+              <Chevron open={groupOpen} onClick={() => onToggle(groupKey)} />
+              {group}
+            </span>
+          </td>
+          {sumSeries(groupRows).map((v, i) => (
+            <td key={i} className="tnum px-2 py-1.5 text-right font-medium">
+              {fmtMoney(v, ccy, { compact: true })}
+            </td>
+          ))}
+        </tr>,
+      );
+      if (groupOpen) for (const r of groupRows) out.push(...accountRowTrs(r));
+    }
+    return out;
+  }
+
   return (
     <>
       <tr className="border-t border-line">
         <td className="sticky left-0 bg-card py-1.5 pr-3 font-semibold">
-          {ccy === "ILS" ? "₪ ILS" : "$ USD"} net worth
+          {ccy === "ILS" ? "₪ ILS" : ccy === "USD" ? "$ USD" : ccy} net worth
         </td>
-        {rows.map((r) => (
+        {totals.map((r) => (
           <td key={r.year} className="tnum px-2 py-1.5 text-right font-semibold">
             {fmtMoney(r.netWorth, ccy, { compact: true })}
           </td>
         ))}
       </tr>
-      {accountRows.map((a) => (
-        <tr key={a.id ?? "extra"} className="group/frow border-t border-line">
-          <td className="sticky left-0 bg-card py-1 pl-3 pr-3">
-            <span className="flex items-center gap-1">
-              <span
-                className={cn("truncate", a.id == null && "text-muted")}
-                dir="auto"
-              >
-                {a.name}
-              </span>
-              {a.id ? (
-                <button
-                  type="button"
-                  title={`${a.name} forecast settings`}
-                  onClick={() => onOpenSettings(a.id!)}
-                  className={cn(
-                    "shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink",
-                    activeId === a.id
-                      ? "text-ink"
-                      : "invisible group-hover/frow:visible",
-                  )}
-                >
-                  <Settings size={12.5} />
-                </button>
-              ) : null}
-            </span>
-          </td>
-          {a.series.map((v, i) => (
-            <td
-              key={rows[i]?.year ?? i}
-              className="tnum px-2 py-1 text-right text-muted"
-            >
-              {fmtMoney(v, ccy, { compact: true })}
-            </td>
-          ))}
-        </tr>
-      ))}
+      {sectionTrs("Assets", `${ccy}:assets`, assets, ASSET_GROUP_ORDER)}
+      {liabilities.length > 0
+        ? sectionTrs("Liabilities", `${ccy}:liab`, liabilities, LIABILITY_GROUP_ORDER)
+        : null}
     </>
   );
 }
 
-/** Monarch-style per-account settings in the side slot. */
-function AccountPanel({
-  account,
-  onClose,
-}: {
-  account: AccountSetting;
-  onClose: () => void;
-}) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [growth, setGrowth] = useState(
-    account.growthPct == null ? "" : String(account.growthPct),
-  );
-  const [contribution, setContribution] = useState(
-    account.contribution ? String(account.contribution) : "",
-  );
-  const [include, setInclude] = useState(account.include);
-
-  function save() {
-    setError(null);
-    startTransition(async () => {
-      const result = await updateForecastAccount(
-        account.id,
-        JSON.stringify({
-          include,
-          growthPct: growth.trim() === "" ? null : Number(growth),
-          contribution: Number(contribution) || 0,
-        }),
-      );
-      if (result.error) {
-        setError(result.error);
-        return;
-      }
-      router.refresh();
-    });
-  }
-
-  const sym = account.currency === "ILS" ? "₪" : "$";
-  return (
-    <Card className="h-fit">
-      <CardHeader
-        title={
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="truncate" dir="auto">
-              {account.name}
-            </span>
-            <span className="shrink-0 text-[12px] font-normal text-muted">
-              {sym} {account.institution ?? account.type}
-            </span>
-          </span>
-        }
-        right={
-          <button onClick={onClose} className="cursor-pointer text-muted hover:text-ink">
-            <X size={16} />
-          </button>
-        }
-      />
-      <div className="flex flex-col gap-3.5 px-5 pb-5 text-[13px]">
-        <label className="flex items-center justify-between gap-2">
-          <span>
-            <span className="block font-semibold">Change over time</span>
-            <span className="block text-[12px] text-muted">
-              Yearly growth for this account
-            </span>
-          </span>
-          <input
-            type="number"
-            step="0.1"
-            value={growth}
-            placeholder={String(account.defaultGrowthPct)}
-            onChange={(e) => setGrowth(e.target.value)}
-            className={`${inputCls} h-8 w-[80px]`}
-          />
-        </label>
-        <p className="-mt-2 text-[11.5px] text-faint">
-          Blank = default ({account.defaultGrowthPct}% for this account type).
-        </p>
-
-        <label className="flex items-center justify-between gap-2">
-          <span>
-            <span className="block font-semibold">Yearly direct contribution</span>
-            <span className="block text-[12px] text-muted">
-              Moved here from extra savings each year
-            </span>
-          </span>
-          <input
-            type="number"
-            value={contribution}
-            placeholder="0"
-            onChange={(e) => setContribution(e.target.value)}
-            className={`${inputCls} h-8 w-[100px]`}
-          />
-        </label>
-
-        <label className="flex items-center justify-between gap-2">
-          <span>
-            <span className="block font-semibold">Exclude from forecast</span>
-            <span className="block text-[12px] text-muted">
-              Leave this account out of all projections
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={!include}
-            onChange={(e) => setInclude(!e.target.checked)}
-            className="h-4 w-4 accent-[#ee6a3c]"
-          />
-        </label>
-
-        {error ? <p className="text-neg">{error}</p> : null}
-        <button className={buttonCls("primary")} disabled={pending} onClick={save}>
-          {pending ? "Saving…" : "Save"}
-        </button>
-      </div>
-    </Card>
-  );
-}
+/* ------------------------------ Fragments ------------------------------ */
 
 function StatCell({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -827,6 +988,9 @@ function AssumptionsPanel({
   const [inflation, setInflation] = useState(settings.inflationPct);
   const [ret, setRet] = useState(settings.returnPct);
   const [useActual, setUseActual] = useState(settings.useActualExpenses);
+  const [futureValues, setFutureValues] = useState<"today" | "nominal">(
+    settings.futureValues,
+  );
   const [override, setOverride] = useState<Record<string, string>>(
     Object.fromEntries(
       currencies.map((c) => [c, String(settings.expensesOverride[c] ?? actualExpenses[c] ?? 0)]),
@@ -854,6 +1018,7 @@ function AssumptionsPanel({
           inflationPct: inflation,
           returnPct: ret,
           useActualExpenses: useActual,
+          futureValues,
           expensesOverride: Object.fromEntries(
             Object.entries(override).map(([k, v]) => [k, Number(v) || 0]),
           ),
@@ -1001,6 +1166,17 @@ function AssumptionsPanel({
             onChange={(e) => setRet(Number(e.target.value))}
             className={`${inputCls} h-8 w-[90px]`}
           />
+        </label>
+        <label className="flex items-center justify-between gap-2">
+          <span className="text-muted">Show future values in</span>
+          <select
+            value={futureValues}
+            onChange={(e) => setFutureValues(e.target.value as "today" | "nominal")}
+            className={`${selectCls} h-8`}
+          >
+            <option value="today">Today&apos;s money (recommended)</option>
+            <option value="nominal">Future money</option>
+          </select>
         </label>
         <p className="text-[11.5px] text-faint">
           Most plans use 2–3% inflation. Long-term stock returns average ~7%.

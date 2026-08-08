@@ -69,7 +69,10 @@ export default async function ReportsPage({
     const buckets = new Map<string, { label: string; labelHe: string | null; icon: string | null; value: number }>();
     for (const t of list) {
       if (kindFor(t) !== kind) continue;
-      const v = Math.abs(Number(t.amount));
+      // Net, not absolute: refunds/incoming reduce an expense bucket
+      // (keeps these totals equal to the sankey and the stat cards).
+      const signed = Number(t.amount);
+      const v = kind === "expense" ? -signed : signed;
       const cat = t.category_id ? catById.get(t.category_id) : null;
       let key: string, label: string, icon: string | null;
       let labelHe: string | null = null;
@@ -89,7 +92,9 @@ export default async function ReportsPage({
       b.value += v;
       buckets.set(key, b);
     }
-    return [...buckets.values()].sort((a, b) => b.value - a.value);
+    return [...buckets.values()]
+      .filter((b) => b.value > 0)
+      .sort((a, b) => b.value - a.value);
   }
 
   const header = (

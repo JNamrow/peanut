@@ -78,6 +78,7 @@ export async function updateAssumptions(payload: string): Promise<ForecastAction
     returnPct: number;
     useActualExpenses: boolean;
     expensesOverride: Record<string, number | null>;
+    futureValues?: "today" | "nominal";
     incomes: { id?: string; name: string; yearlyAmount: number; currency: string; memberUserId: string | null }[];
     retirementYears: { userId: string; retirementYear: number }[];
   };
@@ -92,6 +93,7 @@ export async function updateAssumptions(payload: string): Promise<ForecastAction
     return_pct: data.returnPct,
     use_actual_expenses: data.useActualExpenses,
     expenses_override: data.expensesOverride,
+    ...(data.futureValues ? { future_values: data.futureValues } : {}),
     updated_at: new Date().toISOString(),
   });
   if (error) return { error: error.message };
@@ -167,8 +169,9 @@ export async function updateForecastAccount(
   const { supabase, space } = await getContext();
   let data: {
     include: boolean;
+    growthMode: "default" | "fixed" | "none" | "variable";
     growthPct: number | null;
-    contribution: number;
+    growthPoints: { year: number; rate: number }[];
   };
   try {
     data = JSON.parse(payload);
@@ -179,13 +182,87 @@ export async function updateForecastAccount(
     .from("accounts")
     .update({
       forecast_include: !!data.include,
+      forecast_growth_mode: data.growthMode === "default" ? null : data.growthMode,
       forecast_growth_pct:
         data.growthPct == null || Number.isNaN(data.growthPct)
           ? null
           : data.growthPct,
-      forecast_contribution: Number(data.contribution) || 0,
+      forecast_growth_points:
+        data.growthMode === "variable" ? (data.growthPoints ?? []) : null,
     })
     .eq("id", accountId)
+    .eq("space_id", space.id);
+  if (error) return { error: error.message };
+  revalidatePath("/forecasting");
+  return { error: null };
+}
+
+/** Replace the extra-savings split rows (and the enabled flag) for the space. */
+export async function saveSplits(payload: string): Promise<ForecastActionResult> {
+  const { supabase, space } = await getContext();
+  let data: {
+    enabled: boolean;
+    rows: { accountId: string; mode: "percent" | "amount"; value: number }[];
+  };
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return { error: "Bad split data." };
+  }
+
+  const { error: settingsError } = await supabase
+    .from("forecast_settings")
+    .update({ split_enabled: !!data.enabled, updated_at: new Date().toISOString() })
+    .eq("space_id", space.id);
+  if (settingsError) return { error: settingsError.message };
+
+  const ids = data.rows.map((r) => r.accountId);
+  if (ids.length) {
+    const { data: owned, error: ownError } = await supabase
+      .from("accounts")
+      .select("id")
+      .eq("space_id", space.id)
+      .in("id", ids);
+    if (ownError) return { error: ownError.message };
+    if ((owned ?? []).length !== new Set(ids).size) {
+      return { error: "Unknown account in split." };
+    }
+  }
+
+  const { error: delError } = await supabase
+    .from("forecast_splits")
+    .delete()
+    .eq("space_id", space.id);
+  if (delError) return { error: delError.message };
+
+  if (data.rows.length) {
+    const { error } = await supabase.from("forecast_splits").insert(
+      data.rows.map((r, i) => ({
+        account_id: r.accountId,
+        space_id: space.id,
+        mode: r.mode === "amount" ? "amount" : "percent",
+        value: Number(r.value) || 0,
+        position: i,
+      })),
+    );
+    if (error) return { error: error.message };
+  }
+
+  revalidatePath("/forecasting");
+  return { error: null };
+}
+
+export async function saveWithdrawalOrder(payload: string): Promise<ForecastActionResult> {
+  const { supabase, space } = await getContext();
+  let data: { order: string[] };
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return { error: "Bad order." };
+  }
+  const { error } = await supabase
+    .from("forecast_settings")
+    .update({ withdrawal_order: data.order, updated_at: new Date().toISOString() })
     .eq("space_id", space.id);
   if (error) return { error: error.message };
   revalidatePath("/forecasting");

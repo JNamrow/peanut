@@ -8,11 +8,26 @@ import {
   type ForecastEvent,
   type ForecastIncome,
   type ForecastMember,
+  type ForecastSplit,
 } from "@/lib/forecast";
 import { PageHeader } from "@/components/ui";
 import { SetupWizard } from "./setup-wizard";
-import { ForecastView } from "./forecast-ui";
-import type { Transaction } from "@/lib/types";
+import { ForecastView, type AccountSetting } from "./forecast-ui";
+import type { Account, Transaction } from "@/lib/types";
+
+const GROUP_BY_TYPE: Record<string, string> = {
+  checking: "Cash",
+  savings: "Cash",
+  cash: "Cash",
+  investment: "Investments",
+  pension: "Pensions",
+  credit: "Credit Cards",
+  loan: "Loans",
+  property: "Other Assets",
+  vehicle: "Other Assets",
+  other_asset: "Other Assets",
+  other_liability: "Other Liabilities",
+};
 
 export default async function ForecastingPage() {
   const ctx = await getContext();
@@ -20,25 +35,35 @@ export default async function ForecastingPage() {
   const accounts = await getAccounts();
   const categories = await getCategories();
 
-  const [{ data: settings }, { data: incomeRows }, { data: eventRows }, { data: txns }] =
-    await Promise.all([
-      supabase
-        .from("forecast_settings")
-        .select("*")
-        .eq("space_id", space.id)
-        .maybeSingle(),
-      supabase.from("forecast_incomes").select("*").eq("space_id", space.id),
-      supabase
-        .from("forecast_events")
-        .select("*")
-        .eq("space_id", space.id)
-        .order("year"),
-      supabase
-        .from("transactions")
-        .select("*")
-        .eq("space_id", space.id)
-        .gte("date", addMonths(monthStart(), -12)),
-    ]);
+  const [
+    { data: settings },
+    { data: incomeRows },
+    { data: eventRows },
+    { data: splitRows },
+    { data: txns },
+  ] = await Promise.all([
+    supabase
+      .from("forecast_settings")
+      .select("*")
+      .eq("space_id", space.id)
+      .maybeSingle(),
+    supabase.from("forecast_incomes").select("*").eq("space_id", space.id),
+    supabase
+      .from("forecast_events")
+      .select("*")
+      .eq("space_id", space.id)
+      .order("year"),
+    supabase
+      .from("forecast_splits")
+      .select("*")
+      .eq("space_id", space.id)
+      .order("position"),
+    supabase
+      .from("transactions")
+      .select("*")
+      .eq("space_id", space.id)
+      .gte("date", addMonths(monthStart(), -12)),
+  ]);
 
   // Last-12-months actuals per currency (income + expenses).
   const cf = computeCashflowPerCurrency((txns ?? []) as Transaction[], categories);
@@ -82,11 +107,17 @@ export default async function ForecastingPage() {
     );
   }
 
-  // ---- build inputs. Each account grows at its own rate: an explicit
-  // per-account override, else the return assumption for invested money.
+  // ---- build inputs. Each account grows at its own rate: explicit fixed or
+  // variable points, "none" = 0, else the return assumption for invested money.
   const returnPct = Number(settings.return_pct);
   const defaultGrowth = (type: string) =>
     type === "investment" || type === "pension" ? returnPct : 0;
+  const baseRate = (a: Account) =>
+    a.forecast_growth_mode === "none"
+      ? 0
+      : a.forecast_growth_mode === "fixed"
+        ? (a.forecast_growth_pct ?? defaultGrowth(a.type))
+        : defaultGrowth(a.type);
   const fAccounts: ForecastAccount[] = included.map((a) => {
     const v = Number(a.current_balance ?? 0);
     return {
@@ -94,10 +125,24 @@ export default async function ForecastingPage() {
       name: a.name,
       currency: a.currency,
       balance: a.is_liability ? -Math.abs(v) : v,
-      growthPct: a.forecast_growth_pct ?? defaultGrowth(a.type),
-      yearlyContribution: Number(a.forecast_contribution ?? 0),
+      ratePct: baseRate(a),
+      ratePoints:
+        a.forecast_growth_mode === "variable"
+          ? (a.forecast_growth_points ?? null)
+          : null,
+      group: GROUP_BY_TYPE[a.type] ?? "Other Assets",
+      isLiability: a.is_liability,
     };
   });
+
+  const includedIds = new Set(included.map((a) => a.id));
+  const fSplits: ForecastSplit[] = (splitRows ?? [])
+    .filter((r) => includedIds.has(r.account_id))
+    .map((r) => ({
+      accountId: r.account_id as string,
+      mode: r.mode === "amount" ? ("amount" as const) : ("percent" as const),
+      value: Number(r.value),
+    }));
 
   const override = (settings.expenses_override ?? {}) as Record<string, number | null>;
   const baseExpenses: Record<string, number> = {};
@@ -142,6 +187,11 @@ export default async function ForecastingPage() {
   );
   const endYear = oldestBirth + 90;
 
+  const futureValues: "today" | "nominal" =
+    settings.future_values === "nominal" ? "nominal" : "today";
+  const splitEnabled = !!settings.split_enabled;
+  const withdrawalOrder = (settings.withdrawal_order ?? []) as string[];
+
   const result = computeForecast({
     currencies,
     accounts: fAccounts,
@@ -153,22 +203,43 @@ export default async function ForecastingPage() {
     returnPct,
     startYear: now,
     endYear,
+    futureValues,
+    splitEnabled,
+    splits: fSplits,
+    withdrawalOrder,
   });
 
-  // Settings for the per-row account panel (gear on each account row).
-  const accountSettings = accounts
-    .filter((a) => !a.hidden && a.current_balance != null)
-    .map((a) => ({
+  // Settings for the per-row account panel: all visible accounts (not only
+  // forecast-included), split-row accounts first in position order.
+  const splitByAccount = new Map(
+    (splitRows ?? []).map((r, i) => [r.account_id as string, { ...r, pos: i }]),
+  );
+  const settingsAccounts = accounts.filter(
+    (a) => !a.hidden && a.current_balance != null,
+  );
+  const orderedAccounts = [
+    ...settingsAccounts
+      .filter((a) => splitByAccount.has(a.id))
+      .sort((a, b) => splitByAccount.get(a.id)!.pos - splitByAccount.get(b.id)!.pos),
+    ...settingsAccounts.filter((a) => !splitByAccount.has(a.id)),
+  ];
+  const accountSettings: AccountSetting[] = orderedAccounts.map((a) => {
+    const split = splitByAccount.get(a.id);
+    return {
       id: a.id,
       name: a.name,
       institution: a.institution_name,
       currency: a.currency,
       type: a.type,
       include: a.forecast_include,
+      growthMode: a.forecast_growth_mode ?? "default",
       growthPct: a.forecast_growth_pct,
       defaultGrowthPct: defaultGrowth(a.type),
-      contribution: Number(a.forecast_contribution ?? 0),
-    }));
+      growthPoints: a.forecast_growth_points ?? [],
+      splitMode: split ? (split.mode === "amount" ? "amount" : "percent") : null,
+      splitValue: split ? Number(split.value) : 0,
+    };
+  });
 
   return (
     <ForecastView
@@ -178,11 +249,13 @@ export default async function ForecastingPage() {
       incomes={fIncomes}
       events={fEvents}
       accountSettings={accountSettings}
+      config={{ splitEnabled, withdrawalOrder, futureValues }}
       settings={{
         inflationPct: Number(settings.inflation_pct),
         returnPct,
         useActualExpenses: settings.use_actual_expenses,
         expensesOverride: override,
+        futureValues,
       }}
       actualExpenses={actualExpenses}
     />
