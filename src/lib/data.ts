@@ -16,6 +16,21 @@ export interface AppContext {
   rates: RateTable;
 }
 
+// FX rates change once a day — cache across requests for 6 hours.
+let fxCache: { rows: import("./types").FxRate[]; at: number } | null = null;
+async function getFxRates(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<import("./types").FxRate[]> {
+  if (fxCache && Date.now() - fxCache.at < 6 * 3600 * 1000) return fxCache.rows;
+  const { data } = await supabase
+    .from("fx_rates")
+    .select("*")
+    .gte("rate_date", "2024-01-01")
+    .order("rate_date");
+  fxCache = { rows: data ?? [], at: Date.now() };
+  return fxCache.rows;
+}
+
 /** One shared context per request: session, space, fx rates, display currency. */
 export const getContext = cache(async (): Promise<AppContext> => {
   const supabase = await createClient();
@@ -35,9 +50,9 @@ export const getContext = cache(async (): Promise<AppContext> => {
   }
   const space = membership.spaces as unknown as Space;
 
-  const [{ data: members }, { data: fx }] = await Promise.all([
+  const [{ data: members }, fx] = await Promise.all([
     supabase.from("space_members").select("*").eq("space_id", space.id),
-    supabase.from("fx_rates").select("*").order("rate_date"),
+    getFxRates(supabase),
   ]);
 
   const cookieStore = await cookies();

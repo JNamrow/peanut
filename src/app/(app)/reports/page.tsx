@@ -2,7 +2,8 @@ import { getAccounts, getCategories, getContext } from "@/lib/data";
 import { activeCurrencies, computeCashflowPerCurrency } from "@/lib/multicurrency";
 import { fmtMoney, fmtPct, monthStart, addMonths } from "@/lib/format";
 import { Donut, DONUT_COLORS, TrendBars } from "@/components/charts";
-import { Card, CardHeader, PageHeader, Segmented } from "@/components/ui";
+import { CashflowSankey } from "@/components/sankey";
+import { Card, CardHeader, EmptyState, PageHeader, Segmented } from "@/components/ui";
 import type { Transaction } from "@/lib/types";
 
 const RANGES: Record<string, { label: string; months: number }> = {
@@ -16,7 +17,13 @@ const RANGES: Record<string, { label: string; months: number }> = {
 export default async function ReportsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; range?: string; by?: string; ccy?: string }>;
+  searchParams: Promise<{
+    tab?: string;
+    range?: string;
+    by?: string;
+    ccy?: string;
+    chart?: string;
+  }>;
 }) {
   const params = await searchParams;
   const tab =
@@ -163,6 +170,94 @@ export default async function ReportsPage({
     const maxIncome = Math.max(1, ...incomeRows.map((r) => r.value));
     const maxExpense = Math.max(1, ...expenseRows.map((r) => r.value));
 
+    // --- Sankey graph: income cats -> Income -> groups (+ Savings) -> cats
+    const sNodes: { name: string }[] = [];
+    const sLinks: { source: number; target: number; value: number }[] = [];
+    const addNode = (name: string) => sNodes.push({ name }) - 1;
+    const incomeHub = addNode("Income"); // hub first so it wins the name lookup
+
+    const catLabel = (id: string) => {
+      const c = id === "uncategorized" ? undefined : catById.get(id);
+      return c ? `${c.icon ? `${c.icon} ` : ""}${c.name}` : "Uncategorized";
+    };
+
+    // Level 1: income categories (top 6, rest "Other income") -> Income.
+    const incomeEntries = [...(cf?.incomeByCategory ?? new Map<string, number>())]
+      .filter(([, v]) => v > 0)
+      .map(([id, v]) => ({ label: catLabel(id), value: v }))
+      .sort((a, b) => b.value - a.value);
+    const topIncome = incomeEntries.slice(0, 6);
+    const restIncome = incomeEntries.slice(6).reduce((s, e) => s + e.value, 0);
+    for (const e of topIncome) {
+      sLinks.push({ source: addNode(e.label), target: incomeHub, value: e.value });
+    }
+    if (restIncome > 0) {
+      sLinks.push({ source: addNode("Other income"), target: incomeHub, value: restIncome });
+    }
+
+    // Levels 2+3: Income -> expense group -> its categories (top 3, rest "Other").
+    const groupMap = new Map<string, { total: number; cats: { label: string; value: number }[] }>();
+    for (const [id, v] of cf?.expenseByCategory ?? new Map<string, number>()) {
+      if (v <= 0) continue;
+      const gname = (id === "uncategorized" ? undefined : catById.get(id))?.group ?? "Other";
+      const g = groupMap.get(gname) ?? { total: 0, cats: [] };
+      g.total += v;
+      g.cats.push({ label: catLabel(id), value: v });
+      groupMap.set(gname, g);
+    }
+    const sortedGroups = [...groupMap.entries()].sort((a, b) => b[1].total - a[1].total);
+    for (const [gname, g] of sortedGroups) {
+      const gIdx = addNode(gname);
+      sLinks.push({ source: incomeHub, target: gIdx, value: g.total });
+      g.cats.sort((a, b) => b.value - a.value);
+      for (const c of g.cats.slice(0, 3)) {
+        sLinks.push({ source: gIdx, target: addNode(c.label), value: c.value });
+      }
+      const restCats = g.cats.slice(3).reduce((s, c) => s + c.value, 0);
+      if (restCats > 0) {
+        sLinks.push({ source: gIdx, target: addNode("Other"), value: restCats });
+      }
+    }
+
+    const savings = cf?.savings ?? 0;
+    if (savings > 0) {
+      sLinks.push({ source: incomeHub, target: addNode("Savings"), value: savings });
+    }
+
+    const hasFlow = sLinks.length > 0;
+    const chart =
+      params.chart === "bars"
+        ? "bars"
+        : params.chart === "sankey"
+          ? "sankey"
+          : hasFlow
+            ? "sankey"
+            : "bars";
+    const showSankey = chart === "sankey" && hasFlow;
+    const leafCount = sortedGroups.reduce(
+      (s, [, g]) => s + Math.min(g.cats.length, 3) + (g.cats.length > 3 ? 1 : 0),
+      0,
+    );
+    const maxColumn = Math.max(
+      1,
+      topIncome.length + (restIncome > 0 ? 1 : 0),
+      sortedGroups.length + (savings > 0 ? 1 : 0),
+      leafCount,
+    );
+    const sankeyHeight = Math.max(380, Math.min(720, maxColumn * 44 + 60));
+
+    const chartToggle = (
+      <Segmented
+        options={[
+          { value: "sankey", label: "Sankey" },
+          { value: "bars", label: "Bars" },
+        ]}
+        value={showSankey ? "sankey" : "bars"}
+        hrefBase={`/reports?tab=cashflow&range=${rangeKey}&by=${by}&ccy=${ccy}`}
+        param="chart"
+      />
+    );
+
     return (
       <>
         {header}
@@ -180,12 +275,38 @@ export default async function ReportsPage({
               value={cf && cf.income > 0 ? fmtPct(cf.savingsRate * 100, 0) : "—"}
             />
           </div>
-          <Card>
-            <CardHeader title="Income vs expenses" sub={RANGES[rangeKey].label} />
-            <div className="px-2 pb-2">
-              <TrendBars data={trend} currency={ccy} height={230} />
-            </div>
-          </Card>
+          {showSankey ? (
+            <Card>
+              <CardHeader title="Cash flow" sub={RANGES[rangeKey].label} right={chartToggle} />
+              <div className="px-2 pb-3">
+                <CashflowSankey
+                  nodes={sNodes}
+                  links={sLinks}
+                  currency={ccy}
+                  height={sankeyHeight}
+                />
+              </div>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader
+                title="Income vs expenses"
+                sub={RANGES[rangeKey].label}
+                right={hasFlow ? chartToggle : undefined}
+              />
+              {list.length === 0 ? (
+                <EmptyState
+                  icon={<span>💸</span>}
+                  title="No cash flow yet"
+                  sub="Transactions in this period will show up here once they sync."
+                />
+              ) : (
+                <div className="px-2 pb-2">
+                  <TrendBars data={trend} currency={ccy} height={230} />
+                </div>
+              )}
+            </Card>
+          )}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader title="Income breakdown" />

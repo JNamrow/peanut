@@ -2,8 +2,12 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { buttonCls, inputCls } from "@/components/ui";
-import { deleteAccount, updateAccountBalance } from "../../actions";
+import { buttonCls, inputCls, selectCls } from "@/components/ui";
+import {
+  deleteAccount,
+  setAccountLinkedBank,
+  updateAccountBalance,
+} from "@/app/(app)/actions";
 import { Trash2 } from "lucide-react";
 
 export function BalanceEditor({
@@ -38,6 +42,40 @@ export function BalanceEditor({
         {pending ? "Saving…" : "Save"}
       </button>
     </div>
+  );
+}
+
+export function LinkedBankSelect({
+  accountId,
+  current,
+  banks,
+}: {
+  accountId: string;
+  current: string | null;
+  banks: { id: string; name: string }[];
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  return (
+    <select
+      className={`${selectCls} h-8 max-w-[180px] text-[13px]`}
+      defaultValue={current ?? ""}
+      disabled={pending}
+      onChange={(e) => {
+        const value = e.target.value;
+        startTransition(async () => {
+          await setAccountLinkedBank(accountId, value || null);
+          router.refresh();
+        });
+      }}
+    >
+      <option value="">None</option>
+      {banks.map((b) => (
+        <option key={b.id} value={b.id}>
+          {b.name}
+        </option>
+      ))}
+    </select>
   );
 }
 

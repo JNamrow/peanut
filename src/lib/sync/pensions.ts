@@ -13,7 +13,7 @@ interface YieldRow {
   FUND_NAME?: string;
 }
 
-async function fetchYields(
+export async function fetchYields(
   dataset: string,
   fundId: number,
   limit = 36,

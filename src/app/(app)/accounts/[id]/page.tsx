@@ -1,11 +1,27 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getContext, getCategories } from "@/lib/data";
+import { getAccounts, getContext, getCategories } from "@/lib/data";
 import { fmtMoney, shortDate } from "@/lib/format";
 import { NetWorthChart } from "@/components/charts";
 import { Card, CardHeader, PageHeader } from "@/components/ui";
-import { BalanceEditor, DeleteAccountButton } from "./editor";
-import type { Transaction, BalanceSnapshot } from "@/lib/types";
+import { BalanceEditor, DeleteAccountButton, LinkedBankSelect } from "./editor";
+import type { Account, Transaction, BalanceSnapshot } from "@/lib/types";
+
+const ACRONYMS = new Set(["ira", "hsa", "cd", "esa", "gic", "401k", "403b", "457b", "529"]);
+
+/** "roth ira" -> "Roth IRA", fallback to the account type. */
+function subtypeLabel(a: Pick<Account, "subtype" | "type">): string {
+  return (a.subtype ?? a.type)
+    .replace(/_/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((w) =>
+      ACRONYMS.has(w.toLowerCase())
+        ? w.toUpperCase()
+        : w.charAt(0).toUpperCase() + w.slice(1),
+    )
+    .join(" ");
+}
 
 export default async function AccountDetailPage({
   params,
@@ -22,6 +38,13 @@ export default async function AccountDetailPage({
     .eq("id", id)
     .maybeSingle();
   if (!account) notFound();
+
+  const banks =
+    account.type === "credit"
+      ? (await getAccounts()).filter(
+          (a) => a.type === "checking" || a.type === "savings",
+        )
+      : [];
 
   const [{ data: snapshots }, { data: txns }, { data: pension }] = await Promise.all([
     supabase
@@ -139,9 +162,20 @@ export default async function AccountDetailPage({
             <CardHeader title="Details" />
             <div className="flex flex-col gap-1.5 px-5 pb-4 text-[13px]">
               <Row k="Type" v={account.type} />
+              <Row k="Subtype" v={subtypeLabel(account as Account)} />
               <Row k="Currency" v={account.currency} />
               <Row k="Institution" v={account.institution_name ?? "—"} />
               <Row k="Source" v={account.source} />
+              {account.type === "credit" ? (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted">Pays from</span>
+                  <LinkedBankSelect
+                    accountId={id}
+                    current={account.linked_account_id ?? null}
+                    banks={banks.map((b) => ({ id: b.id, name: b.name }))}
+                  />
+                </div>
+              ) : null}
             </div>
           </Card>
           <Card>

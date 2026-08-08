@@ -140,7 +140,12 @@ export async function updateAccountBalance(accountId: string, balance: number) {
   const { supabase } = await getContext();
   const { data: account } = await supabase
     .from("accounts")
-    .update({ current_balance: balance })
+    .update({
+      current_balance: balance,
+      // Anchor for RiseUp roll-forward (harmless on other sources).
+      balance_anchor: balance,
+      balance_anchor_date: today(),
+    })
     .eq("id", accountId)
     .select("currency")
     .single();
@@ -347,6 +352,45 @@ export async function upsertBudget(
     );
   }
   revalidatePath("/budget");
+}
+
+// -------------------------------------------------------------- categories
+
+export async function updateCategory(
+  categoryId: string,
+  patch: {
+    name?: string;
+    name_he?: string | null;
+    icon?: string | null;
+    color?: string | null;
+  },
+): Promise<ActionResult> {
+  const { supabase } = await getContext();
+  const clean: Record<string, unknown> = {};
+  if (patch.name !== undefined && patch.name.trim()) clean.name = patch.name.trim();
+  if (patch.name_he !== undefined) clean.name_he = patch.name_he?.trim() || null;
+  if (patch.icon !== undefined) clean.icon = patch.icon?.trim() || null;
+  if (patch.color !== undefined) clean.color = patch.color;
+  const { error } = await supabase
+    .from("categories")
+    .update(clean)
+    .eq("id", categoryId);
+  if (error) return { error: error.message };
+  revalidatePath("/transactions");
+  revalidatePath("/budget");
+  return { error: null };
+}
+
+export async function setAccountLinkedBank(
+  accountId: string,
+  linkedAccountId: string | null,
+) {
+  const { supabase } = await getContext();
+  await supabase
+    .from("accounts")
+    .update({ linked_account_id: linkedAccountId })
+    .eq("id", accountId);
+  revalidatePath("/accounts");
 }
 
 // ---------------------------------------------------------------- settings

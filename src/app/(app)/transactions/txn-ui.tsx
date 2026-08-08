@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, X, EyeOff } from "lucide-react";
+import { ChevronRight, EyeOff, Funnel, Plus, X } from "lucide-react";
 import { buttonCls, inputCls, selectCls } from "@/components/ui";
-import { fmtMoney, longDate } from "@/lib/format";
+import { CategoryPicker, useDismiss } from "@/components/category-picker";
+import { fmtMoney, longDate, monthLabel } from "@/lib/format";
 import type { Account, Category, Transaction } from "@/lib/types";
 import {
   addManualTransaction,
@@ -19,6 +20,22 @@ function buildQuery(params: Record<string, string | undefined>): string {
   return s ? `?${s}` : "";
 }
 
+function lastMonths(n: number): string[] {
+  const out: string[] = [];
+  const d = new Date();
+  d.setDate(1);
+  for (let i = 0; i < n; i++) {
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    d.setMonth(d.getMonth() - 1);
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ filters
+
+type FilterKey = "q" | "account" | "category" | "month";
+type FilterDraft = Record<FilterKey, string>;
+
 export function TxnFilters({
   accounts,
   categories,
@@ -31,81 +48,178 @@ export function TxnFilters({
   total: number;
 }) {
   const router = useRouter();
-  const months = useMemo(() => {
-    const out: string[] = [];
-    const d = new Date();
-    d.setDate(1);
-    for (let i = 0; i < 18; i++) {
-      out.push(
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
-      );
-      d.setMonth(d.getMonth() - 1);
-    }
-    return out;
-  }, []);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<FilterDraft>({
+    q: "",
+    account: "",
+    category: "",
+    month: "",
+  });
+  const months = useMemo(() => lastMonths(18), []);
 
-  function setParam(key: string, value: string) {
-    router.push(
-      `/transactions${buildQuery({ ...current, [key]: value || undefined, page: undefined })}`,
-    );
+  useDismiss(anchorRef, open, () => setOpen(false));
+
+  function openPopover() {
+    setDraft({
+      q: current.q ?? "",
+      account: current.account ?? "",
+      category: current.category ?? "",
+      month: current.month ?? "",
+    });
+    setOpen(true);
   }
+
+  function push(next: Record<FilterKey, string | undefined>) {
+    router.push(`/transactions${buildQuery(next)}`);
+  }
+
+  function apply() {
+    push({
+      q: draft.q.trim() || undefined,
+      account: draft.account || undefined,
+      category: draft.category || undefined,
+      month: draft.month || undefined,
+    });
+    setOpen(false);
+  }
+
+  function clear() {
+    router.push("/transactions");
+    setOpen(false);
+  }
+
+  function removeChip(key: FilterKey) {
+    push({
+      q: key === "q" ? undefined : current.q,
+      account: key === "account" ? undefined : current.account,
+      category: key === "category" ? undefined : current.category,
+      month: key === "month" ? undefined : current.month,
+    });
+  }
+
+  const chips: { key: FilterKey; label: string }[] = [];
+  if (current.q) chips.push({ key: "q", label: `“${current.q}”` });
+  if (current.account) {
+    const a = accounts.find((x) => x.id === current.account);
+    chips.push({ key: "account", label: a?.name ?? "Account" });
+  }
+  if (current.category) {
+    const c = categories.find((x) => x.id === current.category);
+    chips.push({
+      key: "category",
+      label: c ? `${c.icon ? `${c.icon} ` : ""}${c.name}` : "Category",
+    });
+  }
+  if (current.month) chips.push({ key: "month", label: monthLabel(current.month) });
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-line pb-3">
-      <input
-        defaultValue={current.q ?? ""}
-        placeholder="Search"
-        className={`${inputCls} max-w-[200px]`}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") setParam("q", (e.target as HTMLInputElement).value);
-        }}
-      />
-      <select
-        className={selectCls}
-        value={current.account ?? ""}
-        onChange={(e) => setParam("account", e.target.value)}
-      >
-        <option value="">All accounts</option>
-        {accounts.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-      <select
-        className={selectCls}
-        value={current.category ?? ""}
-        onChange={(e) => setParam("category", e.target.value)}
-      >
-        <option value="">All categories</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.icon ? `${c.icon} ` : ""}
-            {c.name}
-          </option>
-        ))}
-      </select>
-      <select
-        className={selectCls}
-        value={current.month ?? ""}
-        onChange={(e) => setParam("month", e.target.value)}
-      >
-        <option value="">All time</option>
-        {months.map((m) => (
-          <option key={m} value={m}>
-            {new Date(`${m}-01T00:00:00`).toLocaleDateString("en-US", {
-              month: "long",
-              year: "numeric",
-            })}
-          </option>
-        ))}
-      </select>
+      <div ref={anchorRef} className="relative">
+        <button
+          type="button"
+          className={buttonCls("secondary")}
+          onClick={() => (open ? setOpen(false) : openPopover())}
+        >
+          <Funnel size={14} /> Filters
+        </button>
+
+        {open ? (
+          <div className="absolute left-0 top-full z-50 mt-1 w-[320px] rounded-card border border-line bg-card p-3 shadow-pop">
+            <div className="flex flex-col gap-2.5">
+              <input
+                value={draft.q}
+                onChange={(e) => setDraft((d) => ({ ...d, q: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") apply();
+                }}
+                placeholder="Search merchant"
+                dir="auto"
+                className={inputCls}
+              />
+              <select
+                className={`${selectCls} w-full`}
+                value={draft.account}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, account: e.target.value }))
+                }
+              >
+                <option value="">All accounts</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={`${selectCls} w-full`}
+                value={draft.category}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, category: e.target.value }))
+                }
+              >
+                <option value="">All categories</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.icon ? `${c.icon} ` : ""}
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={`${selectCls} w-full`}
+                value={draft.month}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, month: e.target.value }))
+                }
+              >
+                <option value="">All time</option>
+                {months.map((m) => (
+                  <option key={m} value={m}>
+                    {monthLabel(m)}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center justify-between pt-1">
+                <button type="button" className={buttonCls("ghost", "sm")} onClick={clear}>
+                  Clear
+                </button>
+                <button type="button" className={buttonCls("primary", "sm")} onClick={apply}>
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {chips.map((chip) => (
+        <span
+          key={chip.key}
+          className="inline-flex max-w-[220px] items-center gap-1 rounded-full bg-active px-2 py-1 text-[12px] font-medium text-ink-soft"
+        >
+          <span className="truncate" dir="auto">
+            {chip.label}
+          </span>
+          <button
+            type="button"
+            title="Remove filter"
+            onClick={() => removeChip(chip.key)}
+            className="shrink-0 cursor-pointer text-faint hover:text-ink"
+          >
+            <X size={12} />
+          </button>
+        </span>
+      ))}
+
       <span className="ml-auto text-[12.5px] text-muted">
         {total.toLocaleString()} transactions
       </span>
     </div>
   );
 }
+
+// -------------------------------------------------------------------- table
 
 export function TxnTable({
   txns,
@@ -231,47 +345,62 @@ function TxnRow({
 
   return (
     <div
-      className={`group grid grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_130px] items-center gap-3 border-t border-line px-4 py-2 hover:bg-hover ${txn.hide_from_reports ? "opacity-45" : ""}`}
+      className={`group grid grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_130px] items-center gap-3 border-t border-line px-4 py-2 hover:bg-hover ${txn.hide_from_reports ? "opacity-45" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-[13px]">
           {cat?.icon ?? "💸"}
         </span>
         <div className="min-w-0">
-          <div className="truncate text-[13.5px] font-medium" dir="auto">
+          <button
+            type="button"
+            title={`Search “${txn.name}”`}
+            onClick={() =>
+              router.push(`/transactions?q=${encodeURIComponent(txn.name)}`)
+            }
+            className="block max-w-full cursor-pointer truncate text-left text-[13.5px] font-medium hover:underline"
+            dir="auto"
+          >
             {txn.name}
-          </div>
+          </button>
           {txn.pending ? (
             <span className="text-[11px] font-medium text-accent">Pending</span>
           ) : null}
         </div>
       </div>
-      <select
-        value={localCat}
-        disabled={pending}
-        onChange={(e) => {
-          const v = e.target.value;
-          setLocalCat(v);
-          startTransition(async () => {
-            await setTransactionCategory(txn.id, v);
-            router.refresh();
-          });
-        }}
-        className="h-7 max-w-[220px] cursor-pointer truncate rounded-full border border-transparent bg-active px-2.5 text-[12.5px] font-medium outline-none hover:border-line-strong"
-      >
-        <option value="">Uncategorized</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.icon ? `${c.icon} ` : ""}
-            {c.name}
-          </option>
-        ))}
-      </select>
+
+      <div className="flex min-w-0 items-center gap-1">
+        <CategoryPicker
+          categories={categories}
+          value={localCat}
+          disabled={pending}
+          onSelect={(id) => {
+            setLocalCat(id);
+            startTransition(async () => {
+              await setTransactionCategory(txn.id, id);
+              router.refresh();
+            });
+          }}
+        />
+        {localCat ? (
+          <button
+            type="button"
+            title={cat ? `All ${cat.name} transactions` : "All in this category"}
+            onClick={() => router.push(`/transactions?category=${localCat}`)}
+            className="invisible shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink group-hover:visible"
+          >
+            <ChevronRight size={14} />
+          </button>
+        ) : null}
+      </div>
+
       <span className="truncate text-[12.5px] text-muted">
         {account?.name ?? "—"}
       </span>
+
       <div className="flex items-center justify-end gap-1.5">
         <button
+          type="button"
           title={txn.hide_from_reports ? "Show in reports" : "Hide from reports"}
           className="invisible cursor-pointer text-faint hover:text-ink group-hover:visible"
           onClick={() =>
@@ -292,6 +421,8 @@ function TxnRow({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------- add
 
 export function AddTransactionButton({
   accounts,

@@ -1,8 +1,37 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+/**
+ * RiseUp has no balances API. If the user set a balance once (the anchor),
+ * roll it forward: balance = anchor + sum of transactions since anchor date.
+ */
+export async function rollForwardRiseupBalances(): Promise<number> {
+  const admin = createAdminClient();
+  const { data: accounts, error } = await admin
+    .from("accounts")
+    .select("id, balance_anchor, balance_anchor_date")
+    .eq("source", "riseup")
+    .not("balance_anchor", "is", null)
+    .is("deleted_at", null);
+  if (error) throw new Error(error.message);
+  let updated = 0;
+  for (const a of accounts ?? []) {
+    const { data: sums } = await admin
+      .from("transactions")
+      .select("amount")
+      .eq("account_id", a.id)
+      .gt("date", a.balance_anchor_date as string);
+    const delta = (sums ?? []).reduce((s, t) => s + Number(t.amount), 0);
+    const balance = Math.round((Number(a.balance_anchor) + delta) * 100) / 100;
+    await admin.from("accounts").update({ current_balance: balance }).eq("id", a.id);
+    updated++;
+  }
+  return updated;
+}
+
 /** Snapshot today's balance for every live account that has one. */
 export async function writeDailySnapshots(): Promise<number> {
+  await rollForwardRiseupBalances();
   const admin = createAdminClient();
   const { data: accounts, error } = await admin
     .from("accounts")

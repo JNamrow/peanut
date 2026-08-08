@@ -36,10 +36,14 @@ export interface Account {
   official_name: string | null;
   institution_name: string | null;
   type: AccountType;
+  subtype: string | null;
   currency: Currency;
   mask: string | null;
   current_balance: number | null;
   available_balance: number | null;
+  linked_account_id: string | null;
+  balance_anchor: number | null;
+  balance_anchor_date: string | null;
   is_liability: boolean;
   include_in_net_worth: boolean;
   hidden: boolean;
@@ -69,7 +73,9 @@ export interface Category {
   space_id: string;
   group: string;
   name: string;
+  name_he: string | null;
   icon: string | null;
+  color: string | null;
   kind: "income" | "expense" | "transfer";
   budget_bucket: "fixed" | "flexible" | "non_monthly" | null;
   exclude_from_budget: boolean;

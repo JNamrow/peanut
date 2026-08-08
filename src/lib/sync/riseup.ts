@@ -111,29 +111,43 @@ export async function syncRiseup(
   const back = opts.backfillMonths ?? (conn.last_synced_at ? 0 : 12);
   const offsets = Array.from({ length: back + 2 }, (_, i) => -i); // 0, -1, ...
 
-  // Existing riseup accounts + categories + aliases for this space.
-  const [{ data: accounts }, { data: categories }, { data: aliases }] =
+  // Existing riseup accounts + categories + aliases + user-categorized txns.
+  const [{ data: accounts }, { data: categories }, { data: aliases }, { data: userCat }] =
     await Promise.all([
       admin
         .from("accounts")
         .select("id, external_id")
         .eq("connection_id", connectionId),
-      admin.from("categories").select("id, name, kind").eq("space_id", spaceId),
+      admin
+        .from("categories")
+        .select("id, name, name_he, kind")
+        .eq("space_id", spaceId),
       admin
         .from("category_aliases")
         .select("source_name, category_id")
         .eq("space_id", spaceId)
         .eq("source", "riseup"),
+      // Peanut is the source of truth: never clobber user categorization.
+      admin
+        .from("transactions")
+        .select("external_id")
+        .eq("connection_id", connectionId)
+        .eq("categorized_by", "user"),
     ]);
+  const userCategorized = new Set(
+    (userCat ?? []).map((r) => r.external_id as string),
+  );
   const accountByHash = new Map(
     (accounts ?? []).map((a) => [a.external_id as string, a.id as string]),
   );
   const aliasMap = new Map(
     (aliases ?? []).map((a) => [a.source_name as string, a.category_id as string]),
   );
-  const categoryByName = new Map(
-    (categories ?? []).map((c) => [c.name as string, c.id as string]),
-  );
+  const categoryByName = new Map<string, string>();
+  for (const c of categories ?? []) {
+    categoryByName.set(c.name as string, c.id as string);
+    if (c.name_he) categoryByName.set(c.name_he as string, c.id as string);
+  }
 
   let upserted = 0;
   for (const off of offsets) {
@@ -189,6 +203,7 @@ export async function syncRiseup(
                 space_id: spaceId,
                 group: "RiseUp",
                 name: label,
+                name_he: label,
                 kind: t.isIncome ? "income" : "expense",
                 icon: "🏷️",
               })
@@ -219,25 +234,29 @@ export async function syncRiseup(
       if (cardBill) {
         categoryId = categoryByName.get("Credit Card Payment") ?? categoryId;
       }
-      const { error: upErr } = await admin.from("transactions").upsert(
-        {
-          space_id: spaceId,
-          account_id: accountId,
-          connection_id: connectionId,
-          source: "riseup",
-          external_id: t.transactionId,
-          date: t.transactionDate.slice(0, 10),
-          name: t.businessName ?? "Unknown",
-          original_name: t.businessName,
-          amount: t.isIncome ? Math.abs(t.amount) : -Math.abs(t.amount),
-          currency: "ILS",
-          category_id: categoryId,
-          categorized_by: cardBill ? "rule" : categoryId ? "provider" : "none",
-          is_transfer: cardBill,
-          raw: t as unknown as Record<string, unknown>,
-        },
-        { onConflict: "connection_id,external_id" },
-      );
+      const row: Record<string, unknown> = {
+        space_id: spaceId,
+        account_id: accountId,
+        connection_id: connectionId,
+        source: "riseup",
+        external_id: t.transactionId,
+        date: t.transactionDate.slice(0, 10),
+        name: t.businessName ?? "Unknown",
+        original_name: t.businessName,
+        amount: t.isIncome ? Math.abs(t.amount) : -Math.abs(t.amount),
+        currency: "ILS",
+        raw: t as unknown as Record<string, unknown>,
+      };
+      // Peanut wins: only write category fields if the user has not
+      // recategorized this transaction.
+      if (!userCategorized.has(t.transactionId)) {
+        row.category_id = categoryId;
+        row.categorized_by = cardBill ? "rule" : categoryId ? "provider" : "none";
+        row.is_transfer = cardBill;
+      }
+      const { error: upErr } = await admin
+        .from("transactions")
+        .upsert(row, { onConflict: "connection_id,external_id" });
       if (upErr) throw new Error(`Upsert txn: ${upErr.message}`);
       upserted++;
     }

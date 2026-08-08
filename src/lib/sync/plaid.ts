@@ -86,6 +86,9 @@ async function refreshAccounts(
   for (const a of data.accounts) {
     const type = mapAccountType(a.type, a.subtype);
     const currency = a.balances.iso_currency_code ?? "USD";
+    const subtype = a.subtype
+      ? a.subtype.charAt(0).toUpperCase() + a.subtype.slice(1)
+      : a.type.charAt(0).toUpperCase() + a.type.slice(1);
     const { data: row, error } = await admin
       .from("accounts")
       .upsert(
@@ -98,6 +101,7 @@ async function refreshAccounts(
           official_name: a.official_name,
           mask: a.mask,
           type,
+          subtype,
           currency,
           current_balance: a.balances.current,
           available_balance: a.balances.available,
