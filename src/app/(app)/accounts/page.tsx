@@ -11,7 +11,24 @@ import { InstitutionLogo } from "@/components/institution-logo";
 import { Card, CardHeader, EmptyState, PageHeader, Segmented } from "@/components/ui";
 import { AddAccountButton } from "./add-account";
 import { DualChart } from "./dual-chart";
+import { BalanceChip } from "./balance-chip";
 import type { Account } from "@/lib/types";
+
+/** A single snapshot still deserves a line: pad it flat across the range. */
+function padSeries(
+  series: { date: string; value: number }[],
+  days: number,
+): { date: string; value: number }[] {
+  if (series.length !== 1) return series;
+  const start = new Date();
+  start.setDate(start.getDate() - days + 1);
+  const startStr = start.toISOString().slice(0, 10);
+  const p = series[0];
+  if (p.date <= startStr) {
+    return [p, { date: new Date().toISOString().slice(0, 10), value: p.value }];
+  }
+  return [{ date: startStr, value: p.value }, p];
+}
 
 const RANGES: Record<string, number> = {
   "1M": 30,
@@ -31,6 +48,15 @@ const GROUPS: { label: string; types: Account["type"][] }[] = [
   { label: "Loans", types: ["loan"] },
   { label: "Property & Other", types: ["property", "vehicle", "other_asset", "other_liability"] },
 ];
+
+const BAR_COLORS: Record<string, string> = {
+  Cash: "#1a9a5c",
+  "Credit Cards": "#d94f45",
+  Investments: "#63b3d9",
+  "Pensions & Study Funds": "#8f7ad6",
+  Loans: "#e8b93c",
+  "Property & Other": "#4f8f8b",
+};
 
 const ACRONYMS = new Set(["ira", "hsa", "cd", "esa", "gic", "401k", "403b", "457b", "529"]);
 
@@ -74,8 +100,8 @@ export default async function AccountsPage({
   const seriesByCcy = buildSeriesPerCurrency(accounts, snapshots ?? [], days);
   const accountById = new Map(accounts.map((a) => [a.id, a]));
 
-  const ilsSeries = seriesByCcy.get("ILS") ?? [];
-  const usdSeries = seriesByCcy.get("USD") ?? [];
+  const ilsSeries = padSeries(seriesByCcy.get("ILS") ?? [], days);
+  const usdSeries = padSeries(seriesByCcy.get("USD") ?? [], days);
   const hasChart = ilsSeries.length > 1 || usdSeries.length > 1;
 
   return (
@@ -94,7 +120,7 @@ export default async function AccountsPage({
           </>
         }
       />
-      <div className="grid grid-cols-1 gap-4 px-6 pt-2 xl:grid-cols-[1fr_320px]">
+      <div className="grid grid-cols-1 gap-4 px-6 pt-2 lg:grid-cols-[1fr_300px]">
         <div className="flex flex-col gap-4">
           <Card>
             {currencies.length === 0 ? (
@@ -141,11 +167,7 @@ export default async function AccountsPage({
                 </div>
                 <div className="px-2 pb-1 pt-1">
                   {hasChart ? (
-                    <DualChart
-                      ils={ilsSeries.length > 1 ? ilsSeries : []}
-                      usd={usdSeries.length > 1 ? usdSeries : []}
-                      height={230}
-                    />
+                    <DualChart ils={ilsSeries} usd={usdSeries} height={230} />
                   ) : (
                     <p className="px-3 pb-3 text-[12.5px] text-muted">
                       History starts today.
@@ -250,15 +272,16 @@ export default async function AccountsPage({
                               </div>
                             </div>
                           </div>
-                          {a.current_balance == null ? (
-                            <span className="rounded-full bg-accent-soft px-2.5 py-1 text-[12px] font-medium text-accent">
-                              Set balance
-                            </span>
-                          ) : (
-                            <span className="tnum text-[13.5px] font-medium">
-                              {fmtMoney(Number(a.current_balance), a.currency)}
-                            </span>
-                          )}
+                          <BalanceChip
+                            accountId={a.id}
+                            balance={
+                              a.current_balance == null
+                                ? null
+                                : Number(a.current_balance)
+                            }
+                            currency={a.currency}
+                            type={a.type}
+                          />
                         </Link>
                       );
                     })}
@@ -278,18 +301,65 @@ export default async function AccountsPage({
               ) : (
                 currencies.map((ccy) => {
                   const t = netByCcy.get(ccy);
+                  const parts = GROUPS.map((g) => {
+                    const total = accounts
+                      .filter(
+                        (a) =>
+                          g.types.includes(a.type) &&
+                          !a.hidden &&
+                          !a.is_liability &&
+                          a.currency === ccy &&
+                          a.include_in_net_worth &&
+                          a.current_balance != null,
+                      )
+                      .reduce((s, a) => s + Number(a.current_balance), 0);
+                    return { label: g.label, total };
+                  }).filter((p) => p.total > 0);
+                  const partSum = parts.reduce((s, p) => s + p.total, 0);
                   return (
                     <div key={ccy}>
                       <div className="mb-1 text-[11px] font-semibold tracking-wider text-muted">
                         {CCY_SYMBOL[ccy] ?? ccy} {ccy}
                       </div>
                       <div className="flex items-center justify-between py-0.5">
-                        <span className="text-[13px]">Assets</span>
+                        <span className="text-[13px] font-semibold">Assets</span>
                         <span className="tnum text-[13px] font-semibold">
                           {fmtMoney(t?.assets ?? 0, ccy, { decimals: false })}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between py-0.5">
+                      {partSum > 0 ? (
+                        <>
+                          <div className="my-1.5 flex h-2 w-full gap-0.5 overflow-hidden rounded-full">
+                            {parts.map((p) => (
+                              <div
+                                key={p.label}
+                                style={{
+                                  width: `${(p.total / partSum) * 100}%`,
+                                  background: BAR_COLORS[p.label] ?? "#a3a19e",
+                                }}
+                              />
+                            ))}
+                          </div>
+                          {parts.map((p) => (
+                            <div
+                              key={p.label}
+                              className="flex items-center justify-between py-0.5 text-[12.5px]"
+                            >
+                              <span className="flex items-center gap-1.5 text-ink-soft">
+                                <span
+                                  className="h-2 w-2 rounded-full"
+                                  style={{ background: BAR_COLORS[p.label] ?? "#a3a19e" }}
+                                />
+                                {p.label}
+                              </span>
+                              <span className="tnum">
+                                {fmtMoney(p.total, ccy, { decimals: false })}
+                              </span>
+                            </div>
+                          ))}
+                        </>
+                      ) : null}
+                      <div className="mt-1.5 flex items-center justify-between py-0.5">
                         <span className="text-[13px]">Liabilities</span>
                         <span className="tnum text-[13px] font-semibold">
                           {fmtMoney(t?.liabilities ?? 0, ccy, { decimals: false })}

@@ -1,4 +1,6 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
+import { Info, TrendingUp } from "lucide-react";
 import { getAccounts, getContext } from "@/lib/data";
 import {
   activeCurrencies,
@@ -7,7 +9,14 @@ import {
 } from "@/lib/multicurrency";
 import { fmtMoney, fmtPct } from "@/lib/format";
 import { Donut, DONUT_COLORS } from "@/components/charts";
-import { Card, CardHeader, EmptyState, PageHeader, Segmented } from "@/components/ui";
+import { InstitutionLogo } from "@/components/institution-logo";
+import {
+  Card,
+  CardHeader,
+  EmptyState,
+  PageHeader,
+  Segmented,
+} from "@/components/ui";
 import {
   BENCHMARKS,
   getBenchmarkCloses,
@@ -15,9 +24,9 @@ import {
   type BenchmarkKey,
 } from "@/lib/benchmarks";
 import { fetchYields } from "@/lib/sync/pensions";
+import { AllocBar, type AllocSegment } from "./alloc-bar";
 import { PerfChart, type PerfSeries } from "./perf-chart";
 import type { Account, Holding, PensionConfig } from "@/lib/types";
-import { TrendingUp } from "lucide-react";
 
 const RANGES: Record<string, number> = { "1M": 30, "3M": 91, "6M": 182, "1Y": 365 };
 const CCY_SYMBOL: Record<string, string> = { ILS: "₪", USD: "$" };
@@ -31,10 +40,35 @@ const TABS = [
 ] as const;
 type Tab = (typeof TABS)[number]["value"];
 
+// Monarch's asset-class band order + palette (green/blue/purple/orange/pink).
+const ALLOC_CLASSES = [
+  "Brokerage",
+  "Retirement",
+  "Crypto",
+  "Pensions & Study Funds",
+] as const;
+const ALLOC_COLORS = ["#1a9a5c", "#4a6cd4", "#8b4fd4", "#e8763c", "#d96aa8"];
+
 type YieldRows = Awaited<ReturnType<typeof fetchYields>>;
 
 function periodLabel(period: number): string {
   return `${Math.floor(period / 100)}-${String(period % 100).padStart(2, "0")}`;
+}
+
+/** No securities-level data yet — classes come from the account itself. */
+function allocClass(a: Account): (typeof ALLOC_CLASSES)[number] {
+  if (a.type === "pension") return "Pensions & Study Funds";
+  const sub = (a.subtype ?? "").toLowerCase();
+  if (sub.includes("crypto")) return "Crypto";
+  if (sub.includes("ira") || sub.includes("roth") || sub.includes("401"))
+    return "Retirement";
+  return "Brokerage";
+}
+
+function subtypeLabel(a: Account): string {
+  const raw = a.subtype ?? (a.type === "pension" ? "pension" : "investment");
+  const cleaned = raw.replace(/[-_]/g, " ");
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 export default async function InvestmentsPage({
@@ -96,24 +130,39 @@ export default async function InvestmentsPage({
     holdingsByAccount.set(h.account_id, arr);
   }
 
-  // USD benchmark overlay (holdings tab only). ILS has no benchmark.
+  // Benchmark % over the same window for every benchmark (comparison
+  // cells) + the selected one as a chart overlay. USD only.
+  const benchStats: { key: BenchmarkKey; label: string; pct: number }[] = [];
   let benchSeries: PerfSeries | null = null;
   if (tab === "holdings") {
     const usd = seriesByCcy.get("USD") ?? [];
     if (usd.length > 1) {
-      const closes = await getBenchmarkCloses(bench, usd[0].date);
-      const inRange = closes.filter((c) => c.date <= usd[usd.length - 1].date);
-      if (inRange.length > 1 && inRange[0].close > 0) {
+      const startDate = usd[0].date;
+      const endDate = usd[usd.length - 1].date;
+      const keys = Object.keys(BENCHMARKS) as BenchmarkKey[];
+      const allCloses = await Promise.all(
+        keys.map((k) => getBenchmarkCloses(k, startDate)),
+      );
+      keys.forEach((k, i) => {
+        const inRange = allCloses[i].filter((c) => c.date <= endDate);
+        if (inRange.length < 2 || inRange[0].close <= 0) return;
         const base = inRange[0].close;
-        benchSeries = {
-          name: BENCHMARKS[bench].label,
-          color: BENCHMARKS[bench].color,
-          points: inRange.map((c) => ({
-            date: c.date,
-            pct: ((c.close - base) / base) * 100,
-          })),
-        };
-      }
+        benchStats.push({
+          key: k,
+          label: BENCHMARKS[k].label,
+          pct: ((inRange[inRange.length - 1].close - base) / base) * 100,
+        });
+        if (k === bench) {
+          benchSeries = {
+            name: BENCHMARKS[k].label,
+            color: BENCHMARKS[k].color,
+            points: inRange.map((c) => ({
+              date: c.date,
+              pct: ((c.close - base) / base) * 100,
+            })),
+          };
+        }
+      });
     }
   }
 
@@ -125,7 +174,11 @@ export default async function InvestmentsPage({
       pensionCfgs.map(async (cfg) => {
         const account = invAccounts.find((a) => a.id === cfg.account_id)!;
         try {
-          return { account, cfg, rows: await fetchYields(cfg.dataset, Number(cfg.fund_id)) };
+          return {
+            account,
+            cfg,
+            rows: await fetchYields(cfg.dataset, Number(cfg.fund_id), 14),
+          };
         } catch {
           return { account, cfg, rows: null };
         }
@@ -143,9 +196,9 @@ export default async function InvestmentsPage({
             <a
               key={t.value}
               href={qs(t.value)}
-              className={`rounded-lg px-2.5 py-1 text-[13.5px] font-medium ${
+              className={`rounded-full px-2.5 py-1 text-[13px] font-medium ${
                 tab === t.value
-                  ? "text-accent underline decoration-2 underline-offset-8"
+                  ? "bg-active text-ink"
                   : "text-muted hover:text-ink"
               }`}
             >
@@ -155,27 +208,25 @@ export default async function InvestmentsPage({
         </div>
       }
       right={
-        tab === "holdings" ? (
-          <>
-            {currencies.includes("USD") ? (
-              <Segmented
-                options={(Object.keys(BENCHMARKS) as BenchmarkKey[]).map((k) => ({
-                  value: k,
-                  label: BENCHMARKS[k].label,
-                }))}
-                value={bench}
-                hrefBase={`/investments?tab=holdings&range=${range}`}
-                param="bench"
-              />
-            ) : null}
+        <>
+          {tab === "holdings" && currencies.includes("USD") ? (
             <Segmented
-              options={Object.keys(RANGES).map((r) => ({ value: r, label: r }))}
-              value={range}
-              hrefBase={`/investments?tab=holdings&bench=${bench}`}
-              param="range"
+              options={(Object.keys(BENCHMARKS) as BenchmarkKey[]).map((k) => ({
+                value: k,
+                label: BENCHMARKS[k].label,
+              }))}
+              value={bench}
+              hrefBase={`/investments?tab=holdings&range=${range}`}
+              param="bench"
             />
-          </>
-        ) : null
+          ) : null}
+          <Segmented
+            options={Object.keys(RANGES).map((r) => ({ value: r, label: r }))}
+            value={range}
+            hrefBase={`/investments?tab=${tab}&bench=${bench}`}
+            param="range"
+          />
+        </>
       }
     />
   );
@@ -208,13 +259,16 @@ export default async function InvestmentsPage({
             const total = totalsByCcy.get(ccy)?.net ?? 0;
             const start = series.length ? series[0].value : total;
             const change = total - start;
-            const changePct = start !== 0 ? (change / Math.abs(start)) * 100 : 0;
+            const changePct =
+              series.length > 1 && start !== 0
+                ? (change / Math.abs(start)) * 100
+                : null;
 
             const perf: PerfSeries[] = [];
             if (series.length > 1 && series[0].value !== 0) {
               const base = series[0].value;
               perf.push({
-                name: `${CCY_SYMBOL[ccy] ?? ccy} portfolio`,
+                name: "Your Portfolio",
                 color: PORTFOLIO_COLOR,
                 points: series.map((p) => ({
                   date: p.date,
@@ -228,28 +282,31 @@ export default async function InvestmentsPage({
             return (
               <section key={ccy} className="flex flex-col gap-4">
                 <Card>
-                  <div className="px-5 pt-4">
-                    <div className="text-[11px] font-semibold tracking-wider text-muted">
-                      {CCY_SYMBOL[ccy] ?? ccy} PORTFOLIO
-                    </div>
-                    <div className="flex items-baseline gap-2.5">
-                      <span className="tnum text-[24px] font-semibold">
+                  <CardHeader
+                    title="Performance"
+                    sub={`${CCY_SYMBOL[ccy] ?? ""} ${ccy}`}
+                    right={
+                      <span className="tnum text-[15px] font-semibold">
                         {fmtMoney(total, ccy, { decimals: false })}
                       </span>
-                      {series.length > 1 ? (
-                        <span
-                          className={`tnum text-[12.5px] font-medium ${change >= 0 ? "text-pos" : "text-neg"}`}
-                        >
-                          {change >= 0 ? "↗" : "↘"}{" "}
-                          {fmtMoney(Math.abs(change), ccy, { decimals: false })} (
-                          {Math.abs(changePct).toFixed(1)}%) {range}
-                        </span>
-                      ) : null}
-                    </div>
+                    }
+                  />
+                  <div className="grid grid-flow-col auto-cols-fr divide-x divide-line border-y border-line">
+                    <PerfCell label="Your Portfolio" pct={changePct} />
+                    {ccy === "USD"
+                      ? benchStats.map((b) => (
+                          <PerfCell
+                            key={b.key}
+                            label={b.label}
+                            pct={b.pct}
+                            active={b.key === bench}
+                          />
+                        ))
+                      : null}
                   </div>
-                  <div className="px-2 pb-2 pt-1">
+                  <div className="px-2 pb-2 pt-3">
                     {perf.length > 0 ? (
-                      <PerfChart series={perf} height={220} />
+                      <PerfChart series={perf} height={230} />
                     ) : (
                       <p className="px-3 pb-3 text-[12.5px] text-muted">
                         History starts today.
@@ -257,13 +314,94 @@ export default async function InvestmentsPage({
                     )}
                   </div>
                 </Card>
-                {ccyAccounts.map((a) => (
-                  <AccountHoldingsCard
-                    key={a.id}
-                    account={a}
-                    holdings={holdingsByAccount.get(a.id) ?? []}
-                  />
-                ))}
+
+                <Card>
+                  <CardHeader title="Accounts" sub={ccy} />
+                  <div className="pb-2">
+                    {ccyAccounts.map((a) => {
+                      const rows = (holdingsByAccount.get(a.id) ?? [])
+                        .slice()
+                        .sort(
+                          (x, y) => Number(y.value ?? 0) - Number(x.value ?? 0),
+                        );
+                      return (
+                        <div
+                          key={a.id}
+                          className="border-b border-line last:border-0"
+                        >
+                          <Link
+                            href={`/accounts/${a.id}`}
+                            className="flex items-center gap-3 px-5 py-3 hover:bg-hover"
+                          >
+                            <InstitutionLogo
+                              institution={
+                                a.institution_name ??
+                                cfgByAccount.get(a.id)?.provider ??
+                                null
+                              }
+                              fallback={a.name}
+                              size={34}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className="block truncate text-[13.5px] font-medium"
+                                dir="auto"
+                              >
+                                {a.name}
+                              </span>
+                              <span className="block text-[12px] text-muted">
+                                {subtypeLabel(a)}
+                              </span>
+                            </span>
+                            <span className="tnum text-[13.5px] font-semibold">
+                              {fmtMoney(Number(a.current_balance ?? 0), a.currency)}
+                            </span>
+                          </Link>
+                          {rows.length > 0 ? (
+                            <div className="px-5 pb-3 pl-[72px]">
+                              <div className="grid grid-cols-[minmax(0,1fr)_90px_90px_110px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
+                                <span>Security</span>
+                                <span className="text-right">Price</span>
+                                <span className="text-right">Quantity</span>
+                                <span className="text-right">Value</span>
+                              </div>
+                              {rows.map((h) => (
+                                <div
+                                  key={h.id}
+                                  className="grid grid-cols-[minmax(0,1fr)_90px_90px_110px] gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
+                                >
+                                  <span className="truncate" dir="auto">
+                                    <span className="font-medium">
+                                      {h.symbol ?? "—"}
+                                    </span>
+                                    <span className="ml-1.5 text-muted">
+                                      {h.name}
+                                    </span>
+                                  </span>
+                                  <span className="tnum text-right">
+                                    {h.price != null
+                                      ? fmtMoney(Number(h.price), h.currency)
+                                      : "—"}
+                                  </span>
+                                  <span className="tnum text-right">
+                                    {h.quantity != null
+                                      ? Number(h.quantity).toLocaleString()
+                                      : "—"}
+                                  </span>
+                                  <span className="tnum text-right font-medium">
+                                    {h.value != null
+                                      ? fmtMoney(Number(h.value), h.currency)
+                                      : "—"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
               </section>
             );
           })}
@@ -279,104 +417,125 @@ export default async function InvestmentsPage({
         {header}
         <div className="flex flex-col gap-4 px-6 pt-2">
           {currencies.map((ccy) => {
-            const list = invAccounts
-              .filter((a) => a.currency === ccy)
-              .map((a) => ({
-                name: a.name,
-                value: Math.round(Number(a.current_balance ?? 0)),
-                type: a.type,
-              }))
-              .filter((x) => x.value > 0)
-              .sort((a, b) => b.value - a.value);
-            if (list.length === 0) return null;
-            const total = list.reduce((s, x) => s + x.value, 0);
-            const invTotal = list
-              .filter((x) => x.type === "investment")
-              .reduce((s, x) => s + x.value, 0);
-            const penTotal = total - invTotal;
+            const ccyAccounts = invAccounts.filter(
+              (a) => a.currency === ccy && Number(a.current_balance ?? 0) > 0,
+            );
+            if (ccyAccounts.length === 0) return null;
+            const total = ccyAccounts.reduce(
+              (s, a) => s + Number(a.current_balance ?? 0),
+              0,
+            );
+
+            const groups = ALLOC_CLASSES.map((cls, i) => {
+              const members = ccyAccounts
+                .filter((a) => allocClass(a) === cls)
+                .sort(
+                  (x, y) =>
+                    Number(y.current_balance ?? 0) - Number(x.current_balance ?? 0),
+                );
+              const value = members.reduce(
+                (s, a) => s + Number(a.current_balance ?? 0),
+                0,
+              );
+              return {
+                cls,
+                color: ALLOC_COLORS[i % ALLOC_COLORS.length],
+                members,
+                value,
+              };
+            }).filter((g) => g.value > 0);
+
+            const segments: AllocSegment[] = groups.map((g) => ({
+              name: g.cls,
+              value: g.value,
+              color: g.color,
+            }));
+
+            const COLS =
+              "grid grid-cols-[minmax(0,1fr)_80px_80px_120px_64px] items-center gap-2";
+
             return (
               <Card key={ccy}>
                 <CardHeader
-                  title="Allocation"
-                  sub={`${CCY_SYMBOL[ccy] ?? ""} ${ccy}`}
+                  title="Allocation breakdown"
+                  sub="Asset class"
+                  right={
+                    <span className="text-[13px] text-muted">
+                      {CCY_SYMBOL[ccy] ?? ""} {ccy}
+                    </span>
+                  }
                 />
-                <div className="grid grid-cols-1 items-center gap-6 px-5 pb-5 md:grid-cols-[240px_minmax(0,1fr)]">
-                  <Donut
-                    data={list.map(({ name, value }) => ({ name, value }))}
-                    currency={ccy}
-                    height={200}
-                  />
-                  <div>
-                    <div className="flex flex-col gap-1">
-                      {list.map((x, i) => (
-                        <div key={x.name + i} className="flex items-center gap-3 py-0.5">
+                <div className="px-5 pb-4">
+                  <AllocBar segments={segments} currency={ccy} height={280} />
+                </div>
+                <div className="px-5 pb-5">
+                  {groups.map((g, gi) => (
+                    <div key={g.cls} className={gi > 0 ? "mt-3" : ""}>
+                      <div className={`${COLS} rounded-lg bg-active px-3 py-1.5`}>
+                        <span className="flex items-center gap-2 text-[12px] font-semibold">
                           <span
                             className="h-2.5 w-2.5 shrink-0 rounded-full"
-                            style={{
-                              background: DONUT_COLORS[i % DONUT_COLORS.length],
-                            }}
+                            style={{ background: g.color }}
                           />
-                          <span
-                            className="min-w-0 flex-1 truncate text-[13px] font-medium"
-                            dir="auto"
-                          >
-                            {x.name}
+                          {g.cls}
+                        </span>
+                        {gi === 0 ? (
+                          <>
+                            <span className="text-right text-[11px] font-medium text-muted">
+                              Price
+                            </span>
+                            <span className="text-right text-[11px] font-medium text-muted">
+                              Quantity
+                            </span>
+                            <span className="text-right text-[11px] font-medium text-muted">
+                              Value
+                            </span>
+                            <span className="text-right text-[11px] font-medium text-muted">
+                              Weight
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+                      <div
+                        className={`${COLS} border-b border-line px-3 py-2 text-[13px]`}
+                      >
+                        <span className="truncate font-semibold">{g.cls}</span>
+                        <span />
+                        <span />
+                        <span className="tnum text-right font-semibold">
+                          {fmtMoney(g.value, ccy, { decimals: false })}
+                        </span>
+                        <span className="tnum text-right font-semibold">
+                          {((g.value / total) * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                      {g.members.map((a) => (
+                        <Link
+                          key={a.id}
+                          href={`/accounts/${a.id}`}
+                          className={`${COLS} border-b border-line px-3 py-1.5 text-[13px] last:border-0 hover:bg-hover`}
+                        >
+                          <span className="truncate" dir="auto">
+                            {a.name}
                           </span>
-                          <span className="tnum text-[13px]">
-                            {fmtMoney(x.value, ccy, { decimals: false })}
+                          <span />
+                          <span />
+                          <span className="tnum text-right">
+                            {fmtMoney(Number(a.current_balance ?? 0), ccy, {
+                              decimals: false,
+                            })}
                           </span>
-                          <span className="tnum w-10 text-right text-[12px] text-muted">
-                            {Math.round((x.value / total) * 100)}%
+                          <span className="tnum text-right text-muted">
+                            {(
+                              (Number(a.current_balance ?? 0) / total) *
+                              100
+                            ).toFixed(1)}
+                            %
                           </span>
-                        </div>
+                        </Link>
                       ))}
                     </div>
-                    <div className="mt-5">
-                      <div className="mb-1.5 text-[11px] font-semibold tracking-wider text-muted">
-                        BY TYPE
-                      </div>
-                      <div className="flex h-3 overflow-hidden rounded-full bg-active">
-                        {invTotal > 0 ? (
-                          <div
-                            className="h-full bg-chart-1"
-                            style={{ width: `${(invTotal / total) * 100}%` }}
-                          />
-                        ) : null}
-                        {penTotal > 0 ? (
-                          <div
-                            className="h-full bg-chart-4"
-                            style={{ width: `${(penTotal / total) * 100}%` }}
-                          />
-                        ) : null}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px]">
-                        {invTotal > 0 ? (
-                          <span className="flex items-center gap-1.5">
-                            <span className="h-2.5 w-2.5 rounded-full bg-chart-1" />
-                            <span className="text-ink-soft">Investment</span>
-                            <span className="tnum font-medium">
-                              {fmtMoney(invTotal, ccy, { decimals: false })}
-                            </span>
-                            <span className="tnum text-muted">
-                              {Math.round((invTotal / total) * 100)}%
-                            </span>
-                          </span>
-                        ) : null}
-                        {penTotal > 0 ? (
-                          <span className="flex items-center gap-1.5">
-                            <span className="h-2.5 w-2.5 rounded-full bg-chart-4" />
-                            <span className="text-ink-soft">Pension</span>
-                            <span className="tnum font-medium">
-                              {fmtMoney(penTotal, ccy, { decimals: false })}
-                            </span>
-                            <span className="tnum text-muted">
-                              {Math.round((penTotal / total) * 100)}%
-                            </span>
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </Card>
             );
@@ -392,6 +551,10 @@ export default async function InvestmentsPage({
       <>
         {header}
         <div className="flex flex-col gap-4 px-6 pt-2">
+          <InfoBanner>
+            Cost basis comes from your broker where available. Pensions show
+            gain since your last anchor (includes deposits).
+          </InfoBanner>
           {currencies.map((ccy) => {
             const total = totalsByCcy.get(ccy)?.net ?? 0;
             const ccyHoldings = holdings
@@ -400,67 +563,66 @@ export default async function InvestmentsPage({
             const withCb = ccyHoldings.filter(
               (h) => h.cost_basis != null && h.value != null,
             );
-            const costBasis = withCb.reduce((s, h) => s + Number(h.cost_basis), 0);
-            const curValue = withCb.reduce((s, h) => s + Number(h.value), 0);
-            const gain = curValue - costBasis;
-            const gainPct = costBasis > 0 ? (gain / costBasis) * 100 : 0;
             const pensions = invAccounts.filter(
               (a) => a.currency === ccy && a.type === "pension",
             );
+            const anchored = pensions.filter(
+              (a) => cfgByAccount.get(a.id)?.anchor_balance != null,
+            );
+            const cost =
+              withCb.reduce((s, h) => s + Number(h.cost_basis), 0) +
+              anchored.reduce(
+                (s, a) => s + Number(cfgByAccount.get(a.id)!.anchor_balance),
+                0,
+              );
+            const value =
+              withCb.reduce((s, h) => s + Number(h.value), 0) +
+              anchored.reduce((s, a) => s + Number(a.current_balance ?? 0), 0);
+            const hasCost = withCb.length > 0 || anchored.length > 0;
+            const gain = value - cost;
+            const gainPct = cost > 0 ? (gain / cost) * 100 : 0;
 
             return (
               <section key={ccy} className="flex flex-col gap-4">
-                <div>
-                  <div className="mb-2 text-[11px] font-semibold tracking-wider text-muted">
-                    {CCY_SYMBOL[ccy] ?? ccy} {ccy}
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                    <StatCard
-                      label="PORTFOLIO VALUE"
+                <Card>
+                  <div className="grid grid-cols-2 divide-x divide-line lg:grid-cols-4">
+                    <GainStat
+                      label="Portfolio value"
                       value={fmtMoney(total, ccy, { decimals: false })}
                     />
-                    <StatCard
-                      label="COST BASIS"
+                    <GainStat
+                      label="Portfolio cost (partial)"
                       value={
-                        withCb.length > 0
-                          ? fmtMoney(costBasis, ccy, { decimals: false })
-                          : "—"
+                        hasCost ? fmtMoney(cost, ccy, { decimals: false }) : "—"
                       }
                     />
-                    <StatCard
-                      label="GAIN / LOSS"
+                    <GainStat
+                      label="Gain/loss"
                       value={
-                        withCb.length > 0
+                        hasCost
                           ? fmtMoney(gain, ccy, { sign: true, decimals: false })
                           : "—"
                       }
-                      tone={withCb.length > 0 ? (gain >= 0 ? "pos" : "neg") : undefined}
+                      tone={hasCost ? (gain >= 0 ? "pos" : "neg") : undefined}
                     />
-                    <StatCard
-                      label="GAIN / LOSS %"
-                      value={withCb.length > 0 ? fmtPct(gainPct, 1) : "—"}
-                      tone={withCb.length > 0 ? (gain >= 0 ? "pos" : "neg") : undefined}
+                    <GainStat
+                      label="Gain/loss %"
+                      value={hasCost ? fmtPct(gainPct, 2) : "—"}
+                      tone={hasCost ? (gain >= 0 ? "pos" : "neg") : undefined}
                     />
                   </div>
-                  <p className="mt-1.5 text-[12px] text-muted">
-                    Partial — based on holdings with a cost basis
-                    {withCb.length < ccyHoldings.length
-                      ? ` (${withCb.length} of ${ccyHoldings.length})`
-                      : ""}
-                    .
-                  </p>
-                </div>
+                </Card>
 
                 {ccyHoldings.length > 0 ? (
                   <Card>
                     <CardHeader title="Holdings" sub={ccy} />
                     <div className="px-5 pb-4">
-                      <div className="grid grid-cols-[minmax(0,1fr)_80px_110px_110px_150px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
+                      <div className="grid grid-cols-[minmax(0,1fr)_80px_120px_120px_150px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
                         <span>Security</span>
                         <span className="text-right">Quantity</span>
-                        <span className="text-right">Cost basis</span>
-                        <span className="text-right">Value</span>
-                        <span className="text-right">Gain / loss</span>
+                        <span className="text-right">Total cost basis</span>
+                        <span className="text-right">Current value</span>
+                        <span className="text-right">Gain/loss</span>
                       </div>
                       {ccyHoldings.map((h) => {
                         const hasCb = h.cost_basis != null && h.value != null;
@@ -474,7 +636,7 @@ export default async function InvestmentsPage({
                         return (
                           <div
                             key={h.id}
-                            className="grid grid-cols-[minmax(0,1fr)_80px_110px_110px_150px] items-center gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
+                            className="grid grid-cols-[minmax(0,1fr)_80px_120px_120px_150px] items-center gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
                           >
                             <span className="truncate" dir="auto">
                               <span className="font-medium">{h.symbol ?? "—"}</span>
@@ -497,9 +659,15 @@ export default async function InvestmentsPage({
                             </span>
                             <span className="text-right">
                               {hasCb ? (
-                                <GainPill gain={hGain} pct={hPct} currency={h.currency} />
+                                <GainPill
+                                  gain={hGain}
+                                  pct={hPct}
+                                  currency={h.currency}
+                                />
                               ) : (
-                                <span className="text-[12.5px] text-faint">no basis</span>
+                                <span className="text-[12.5px] text-faint">
+                                  no basis
+                                </span>
                               )}
                             </span>
                           </div>
@@ -513,20 +681,21 @@ export default async function InvestmentsPage({
                   <Card>
                     <CardHeader
                       title="Pensions"
-                      sub="gain since anchor — includes contributions"
+                      sub="gain since anchor — includes deposits"
                     />
                     <div className="px-5 pb-4">
-                      <div className="grid grid-cols-[minmax(0,1fr)_110px_130px_130px_150px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
+                      <div className="grid grid-cols-[minmax(0,1fr)_130px_130px_150px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
                         <span>Account</span>
-                        <span className="text-right">Anchor date</span>
                         <span className="text-right">Anchor balance</span>
-                        <span className="text-right">Current</span>
+                        <span className="text-right">Current value</span>
                         <span className="text-right">Gain since anchor</span>
                       </div>
                       {pensions.map((a) => {
                         const cfg = cfgByAccount.get(a.id);
                         const anchor =
-                          cfg?.anchor_balance != null ? Number(cfg.anchor_balance) : null;
+                          cfg?.anchor_balance != null
+                            ? Number(cfg.anchor_balance)
+                            : null;
                         const cur = Number(a.current_balance ?? 0);
                         const pGain = anchor != null ? cur - anchor : null;
                         const pPct =
@@ -536,25 +705,30 @@ export default async function InvestmentsPage({
                         return (
                           <div
                             key={a.id}
-                            className="grid grid-cols-[minmax(0,1fr)_110px_130px_130px_150px] items-center gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
+                            className="grid grid-cols-[minmax(0,1fr)_130px_130px_150px] items-center gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
                           >
                             <span className="truncate font-medium" dir="auto">
                               {a.name}
                             </span>
-                            <span className="tnum text-right text-muted">
-                              {cfg?.anchor_date ?? "—"}
-                            </span>
                             <span className="tnum text-right">
-                              {anchor != null ? fmtMoney(anchor, a.currency) : "—"}
+                              {anchor != null
+                                ? fmtMoney(anchor, a.currency)
+                                : "—"}
                             </span>
                             <span className="tnum text-right font-medium">
                               {fmtMoney(cur, a.currency)}
                             </span>
                             <span className="text-right">
                               {pGain != null ? (
-                                <GainPill gain={pGain} pct={pPct} currency={a.currency} />
+                                <GainPill
+                                  gain={pGain}
+                                  pct={pPct}
+                                  currency={a.currency}
+                                />
                               ) : (
-                                <span className="text-[12.5px] text-faint">no anchor</span>
+                                <span className="text-[12.5px] text-faint">
+                                  no anchor
+                                </span>
                               )}
                             </span>
                           </div>
@@ -572,103 +746,197 @@ export default async function InvestmentsPage({
   }
 
   // -------------------------------------------------------------- Funds
+  const pensionAccounts = invAccounts
+    .filter((a) => a.type === "pension" && Number(a.current_balance ?? 0) > 0)
+    .sort(
+      (x, y) => Number(y.current_balance ?? 0) - Number(x.current_balance ?? 0),
+    );
+  const pensionTotal = pensionAccounts.reduce(
+    (s, a) => s + Number(a.current_balance ?? 0),
+    0,
+  );
+  const pensionCcy = pensionAccounts[0]?.currency ?? "ILS";
+
   return (
     <>
       {header}
-      <div className="px-6 pt-2">
-        {fundCards.length === 0 ? (
+      <div className="flex flex-col gap-4 px-6 pt-2">
+        <InfoBanner>
+          Israeli pension and study funds — official published yields from
+          data.gov.il (about a 5-week lag).
+        </InfoBanner>
+        {pensionCfgs.length === 0 ? (
           <Card>
             <EmptyState
               icon={<TrendingUp size={19} />}
               title="No pension funds configured"
-              sub="Add a pension account with a fund number to track its published yields here."
+              sub="Add a pension from Accounts → Add account → Pension, with its fund number, to track published yields here."
             />
           </Card>
         ) : (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {fundCards.map(({ account, cfg, rows }) => {
-              const last12 = (rows ?? []).slice(0, 12);
-              const year = new Date().getFullYear();
-              const ytd = (rows ?? [])
-                .filter((r) => Math.floor(Number(r.REPORT_PERIOD) / 100) === year)
-                .reduce((s, r) => s + Number(r.MONTHLY_YIELD), 0);
-              return (
-                <Card key={account.id}>
-                  <CardHeader
-                    title={
-                      <Link
-                        href={`/accounts/${account.id}`}
-                        className="hover:text-accent"
-                        dir="auto"
-                      >
-                        {account.name}
-                      </Link>
-                    }
-                    sub={`${cfg.dataset} · fund ${cfg.fund_id}`}
-                  />
-                  <div className="px-5 pb-4">
-                    {rows === null ? (
-                      <p className="py-6 text-center text-[13px] text-muted">
-                        Couldn&apos;t reach data.gov.il — published yields are
-                        unavailable right now. Try again later.
-                      </p>
-                    ) : last12.length === 0 ? (
-                      <p className="py-6 text-center text-[13px] text-muted">
-                        No published yields found for fund {cfg.fund_id}.
-                      </p>
-                    ) : (
-                      <>
-                        {last12[0].FUND_NAME ? (
-                          <p
-                            className="mb-2 truncate text-[12.5px] text-ink-soft"
-                            dir="auto"
-                          >
-                            {last12[0].FUND_NAME}
-                          </p>
-                        ) : null}
-                        <div className="grid grid-cols-[1fr_120px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
-                          <span>Period</span>
-                          <span className="text-right">Monthly yield</span>
-                        </div>
-                        {last12.map((r) => {
-                          const y = Number(r.MONTHLY_YIELD);
-                          return (
-                            <div
-                              key={r.REPORT_PERIOD}
-                              className="grid grid-cols-[1fr_120px] gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
-                            >
-                              <span className="tnum">
-                                {periodLabel(Number(r.REPORT_PERIOD))}
-                              </span>
-                              <span
-                                className={`tnum text-right font-medium ${y >= 0 ? "text-pos" : "text-neg"}`}
-                              >
-                                {y >= 0 ? "+" : ""}
-                                {fmtPct(y, 2)}
-                              </span>
-                            </div>
-                          );
-                        })}
-                        <div className="mt-2 flex items-center justify-between border-t border-line pt-2 text-[13px]">
-                          <span className="font-medium">{year} YTD</span>
-                          <span
-                            className={`tnum font-semibold ${ytd >= 0 ? "text-pos" : "text-neg"}`}
-                          >
-                            {ytd >= 0 ? "+" : ""}
-                            {fmtPct(ytd, 2)}
+          <>
+            {pensionAccounts.length > 0 ? (
+              <Card>
+                <CardHeader title="Fund analysis" sub="by fund value" />
+                <div className="grid grid-cols-1 items-center gap-6 px-5 pb-5 md:grid-cols-[260px_minmax(0,1fr)]">
+                  <div className="relative">
+                    <Donut
+                      data={pensionAccounts.map((a) => ({
+                        name: a.name,
+                        value: Math.round(Number(a.current_balance ?? 0)),
+                      }))}
+                      currency={pensionCcy}
+                      height={220}
+                    />
+                    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                      <span className="tnum text-[17px] font-semibold">
+                        {fmtMoney(pensionTotal, pensionCcy, { decimals: false })}
+                      </span>
+                      <span className="text-[11.5px] text-muted">
+                        Total value
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_70px_130px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
+                      <span>Fund</span>
+                      <span className="text-right">Percent</span>
+                      <span className="text-right">Value</span>
+                    </div>
+                    {pensionAccounts.map((a, i) => {
+                      const v = Number(a.current_balance ?? 0);
+                      return (
+                        <div
+                          key={a.id}
+                          className="grid grid-cols-[minmax(0,1fr)_70px_130px] items-center gap-2 border-b border-line py-1.5 text-[13px]"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 shrink-0 rounded-full"
+                              style={{
+                                background: DONUT_COLORS[i % DONUT_COLORS.length],
+                              }}
+                            />
+                            <span className="truncate" dir="auto">
+                              {a.name}
+                            </span>
+                          </span>
+                          <span className="tnum text-right text-muted">
+                            {((v / pensionTotal) * 100).toFixed(1)}%
+                          </span>
+                          <span className="tnum text-right">
+                            {fmtMoney(v, a.currency, { decimals: false })}
                           </span>
                         </div>
-                        <p className="mt-2 text-[12px] text-muted">
-                          Published yields lag by about 5 weeks; gross of your
-                          personal management fee.
-                        </p>
-                      </>
-                    )}
+                      );
+                    })}
+                    <div className="grid grid-cols-[minmax(0,1fr)_70px_130px] items-center gap-2 pt-2 text-[13px] font-semibold">
+                      <span>Total</span>
+                      <span className="tnum text-right">100%</span>
+                      <span className="tnum text-right">
+                        {fmtMoney(pensionTotal, pensionCcy, { decimals: false })}
+                      </span>
+                    </div>
                   </div>
-                </Card>
-              );
-            })}
-          </div>
+                </div>
+              </Card>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {fundCards.map(({ account, cfg, rows }) => {
+                const last12 = (rows ?? []).slice(0, 12).slice().reverse();
+                const year = new Date().getFullYear();
+                const ytd =
+                  Math.round(
+                    (rows ?? [])
+                      .filter(
+                        (r) => Math.floor(Number(r.REPORT_PERIOD) / 100) === year,
+                      )
+                      .reduce((s, r) => s + Number(r.MONTHLY_YIELD), 0) * 100,
+                  ) / 100;
+                return (
+                  <Card key={account.id}>
+                    <CardHeader
+                      title={
+                        <Link
+                          href={`/accounts/${account.id}`}
+                          className="hover:text-accent"
+                          dir="auto"
+                        >
+                          {account.name}
+                        </Link>
+                      }
+                      sub={`track ${cfg.fund_id} · ${cfg.dataset}`}
+                      right={
+                        rows !== null && rows.length > 0 ? (
+                          <span
+                            className={`tnum rounded-full px-2.5 py-1 text-[12px] font-semibold ${
+                              ytd >= 0
+                                ? "bg-pos-soft text-pos"
+                                : "bg-neg-soft text-neg"
+                            }`}
+                          >
+                            YTD {ytd >= 0 ? "+" : ""}
+                            {fmtPct(ytd, 2)}
+                          </span>
+                        ) : null
+                      }
+                    />
+                    <div className="px-5 pb-4">
+                      {rows === null ? (
+                        <p className="py-6 text-center text-[13px] text-muted">
+                          Couldn&apos;t reach data.gov.il — published yields are
+                          unavailable right now. Try again later.
+                        </p>
+                      ) : last12.length === 0 ? (
+                        <p className="py-6 text-center text-[13px] text-muted">
+                          No published yields found for fund {cfg.fund_id}.
+                        </p>
+                      ) : (
+                        <>
+                          {last12[0].FUND_NAME ? (
+                            <p
+                              className="mb-2.5 truncate text-[12.5px] text-ink-soft"
+                              dir="auto"
+                            >
+                              {last12[0].FUND_NAME}
+                            </p>
+                          ) : null}
+                          <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
+                            {last12.map((r) => {
+                              const y = Number(r.MONTHLY_YIELD);
+                              return (
+                                <div
+                                  key={r.REPORT_PERIOD}
+                                  className="rounded-lg bg-bg px-2.5 py-2"
+                                >
+                                  <div className="tnum text-[11px] text-muted">
+                                    {periodLabel(Number(r.REPORT_PERIOD))}
+                                  </div>
+                                  <div
+                                    className={`tnum text-[13px] font-medium ${
+                                      y >= 0 ? "text-pos" : "text-neg"
+                                    }`}
+                                  >
+                                    {y >= 0 ? "+" : ""}
+                                    {fmtPct(y, 2)}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <p className="mt-2.5 text-[12px] text-muted">
+                            Published yields lag by about 5 weeks; gross of your
+                            personal management fee.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
     </>
@@ -677,71 +945,47 @@ export default async function InvestmentsPage({
 
 // -------------------------------------------------------- local pieces
 
-function AccountHoldingsCard({
-  account,
-  holdings,
-}: {
-  account: Account;
-  holdings: Holding[];
-}) {
-  const balance = Number(account.current_balance ?? 0);
+function InfoBanner({ children }: { children: ReactNode }) {
   return (
-    <Card>
-      <CardHeader
-        title={
-          <Link href={`/accounts/${account.id}`} className="hover:text-accent" dir="auto">
-            {account.name}
-          </Link>
-        }
-        sub={
-          account.type === "pension"
-            ? "auto-tracked pension"
-            : (account.institution_name ?? "")
-        }
-        right={
-          <span className="tnum text-[14px] font-semibold">
-            {fmtMoney(balance, account.currency)}
-          </span>
-        }
-      />
-      {holdings.length > 0 ? (
-        <div className="px-5 pb-3">
-          <div className="grid grid-cols-[minmax(0,1fr)_90px_90px_110px] gap-2 border-b border-line pb-1.5 text-[11.5px] font-medium text-muted">
-            <span>Security</span>
-            <span className="text-right">Price</span>
-            <span className="text-right">Quantity</span>
-            <span className="text-right">Value</span>
-          </div>
-          {holdings
-            .slice()
-            .sort((x, y) => Number(y.value ?? 0) - Number(x.value ?? 0))
-            .map((h) => (
-              <div
-                key={h.id}
-                className="grid grid-cols-[minmax(0,1fr)_90px_90px_110px] gap-2 border-b border-line py-1.5 text-[13px] last:border-0"
-              >
-                <span className="truncate" dir="auto">
-                  <span className="font-medium">{h.symbol ?? "—"}</span>
-                  <span className="ml-1.5 text-muted">{h.name}</span>
-                </span>
-                <span className="tnum text-right">
-                  {h.price != null ? fmtMoney(Number(h.price), h.currency) : "—"}
-                </span>
-                <span className="tnum text-right">
-                  {h.quantity != null ? Number(h.quantity).toLocaleString() : "—"}
-                </span>
-                <span className="tnum text-right font-medium">
-                  {h.value != null ? fmtMoney(Number(h.value), h.currency) : "—"}
-                </span>
-              </div>
-            ))}
-        </div>
-      ) : null}
-    </Card>
+    <div className="flex items-start gap-2.5 rounded-xl bg-[#eef4fb] px-4 py-3 text-[12.5px] text-ink-soft">
+      <Info size={15} className="mt-0.5 shrink-0 text-[#4a6cd4]" />
+      <span>{children}</span>
+    </div>
   );
 }
 
-function StatCard({
+function PerfCell({
+  label,
+  pct,
+  active = false,
+}: {
+  label: string;
+  pct: number | null;
+  active?: boolean;
+}) {
+  return (
+    <div className="px-5 py-3.5">
+      <div
+        className={`text-[12px] font-medium ${active ? "text-ink" : "text-muted"}`}
+      >
+        {label}
+      </div>
+      {pct != null ? (
+        <div
+          className={`tnum mt-0.5 text-[20px] font-bold ${
+            pct >= 0 ? "text-pos" : "text-neg"
+          }`}
+        >
+          {fmtPct(pct, 2)}
+        </div>
+      ) : (
+        <div className="tnum mt-0.5 text-[20px] font-bold text-faint">—</div>
+      )}
+    </div>
+  );
+}
+
+function GainStat({
   label,
   value,
   tone,
@@ -751,16 +995,16 @@ function StatCard({
   tone?: "pos" | "neg";
 }) {
   return (
-    <Card className="px-5 py-4 text-center">
+    <div className="px-5 py-4">
+      <div className="text-[12px] font-medium text-muted">{label}</div>
       <div
-        className={`tnum text-[19px] font-semibold ${tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : ""}`}
+        className={`tnum mt-0.5 text-[20px] font-semibold ${
+          tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : ""
+        }`}
       >
         {value}
       </div>
-      <div className="mt-0.5 text-[10.5px] font-semibold tracking-wider text-muted">
-        {label}
-      </div>
-    </Card>
+    </div>
   );
 }
 

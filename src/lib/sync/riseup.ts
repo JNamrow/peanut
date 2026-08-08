@@ -38,6 +38,15 @@ async function riseupGet(token: string, path: string): Promise<unknown> {
   return res.json();
 }
 
+// Which bank-statement descriptors pay which card issuer's bill.
+export const CARD_BILL_PATTERNS_BY_INSTITUTION: Record<string, string[]> = {
+  "Leumi Card": ["לאומי ויזה", "כרטיסי אשראי"],
+  "American Express": ["אמריקן אקספרס"],
+  "Visa Cal": ["ויזה כאל", "כאל"],
+  Isracard: ["ישראכרט"],
+  Max: ["מקס איט"],
+};
+
 // Bank-side debits of monthly card bills. Counting these AND the card's
 // own purchases double-counts spending — Monarch marks them transfers.
 const CC_BILL_PATTERNS = [
@@ -177,7 +186,7 @@ export async function syncRiseup(
             name:
               t.accountNickname || (isCard ? pretty : `${pretty} Checking`),
             institution_name: pretty,
-            mask: hash.slice(0, 4),
+            // No real card digits in the RiseUp API — leave mask empty.
             type: isCard ? "credit" : "checking",
             currency: "ILS",
             is_liability: isCard,

@@ -76,6 +76,7 @@ async function refreshAccounts(
   connectionId: string,
   spaceId: string,
   accessToken: string,
+  institutionName: string | null,
 ): Promise<Map<string, string>> {
   const admin = createAdminClient();
   const data = await plaidPost<{ accounts: PlaidAccount[] }>("/accounts/get", {
@@ -99,6 +100,7 @@ async function refreshAccounts(
           external_id: a.account_id,
           name: a.name,
           official_name: a.official_name,
+          institution_name: institutionName,
           mask: a.mask,
           type,
           subtype,
@@ -153,6 +155,7 @@ export async function syncPlaid(connectionId: string): Promise<{
     connectionId,
     spaceId,
     String(accessToken),
+    (conn.institution_name as string | null) ?? (conn.label as string | null),
   );
 
   const { data: aliases } = await admin

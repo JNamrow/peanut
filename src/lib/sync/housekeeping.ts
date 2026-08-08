@@ -1,30 +1,131 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+import { CARD_BILL_PATTERNS_BY_INSTITUTION } from "./riseup";
+
 /**
- * RiseUp has no balances API. If the user set a balance once (the anchor),
- * roll it forward: balance = anchor + sum of transactions since anchor date.
+ * RiseUp has no balances API. Two rules keep balances honest anyway:
+ * - Bank accounts: user sets an anchor once; balance = anchor + txns
+ *   since. On first anchor we also BACKFILL daily history from the
+ *   12 months of transactions, so net-worth charts light up instantly.
+ * - Credit cards: balance = the charges accumulated since the last
+ *   bill debit hit the linked bank account (shown as negative,
+ *   "pending" — it has not left the bank yet).
  */
 export async function rollForwardRiseupBalances(): Promise<number> {
   const admin = createAdminClient();
   const { data: accounts, error } = await admin
     .from("accounts")
-    .select("id, balance_anchor, balance_anchor_date")
+    .select("id, type, institution_name, linked_account_id, balance_anchor, balance_anchor_date, currency")
     .eq("source", "riseup")
-    .not("balance_anchor", "is", null)
     .is("deleted_at", null);
   if (error) throw new Error(error.message);
   let updated = 0;
+
   for (const a of accounts ?? []) {
-    const { data: sums } = await admin
+    if (a.type === "credit") {
+      // ---- card cycle balance
+      const patterns =
+        CARD_BILL_PATTERNS_BY_INSTITUTION[a.institution_name ?? ""] ?? [];
+      let lastBill: string | null = null;
+      if (patterns.length && a.linked_account_id) {
+        const ors = patterns.map((p) => `name.ilike.%${p}%`).join(",");
+        const { data: bill } = await admin
+          .from("transactions")
+          .select("date")
+          .eq("account_id", a.linked_account_id)
+          .eq("is_transfer", true)
+          .or(ors)
+          .order("date", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        lastBill = (bill?.date as string) ?? null;
+      }
+      const since =
+        lastBill ?? new Date().toISOString().slice(0, 8) + "01";
+      const { data: charges } = await admin
+        .from("transactions")
+        .select("amount")
+        .eq("account_id", a.id)
+        .gt("date", since);
+      const cycle = (charges ?? []).reduce((s, t) => s + Number(t.amount), 0);
+      const balance = Math.round(cycle * 100) / 100; // negative = owed
+      await admin
+        .from("accounts")
+        .update({ current_balance: balance })
+        .eq("id", a.id);
+      updated++;
+      continue;
+    }
+
+    // ---- bank accounts need an anchor
+    if (a.balance_anchor == null || !a.balance_anchor_date) continue;
+    const anchorDate = a.balance_anchor_date as string;
+    const anchor = Number(a.balance_anchor);
+
+    const { data: txns } = await admin
       .from("transactions")
-      .select("amount")
+      .select("date, amount")
       .eq("account_id", a.id)
-      .gt("date", a.balance_anchor_date as string);
-    const delta = (sums ?? []).reduce((s, t) => s + Number(t.amount), 0);
-    const balance = Math.round((Number(a.balance_anchor) + delta) * 100) / 100;
+      .order("date");
+    const list = (txns ?? []) as { date: string; amount: number }[];
+
+    // Current balance = anchor + txns after the anchor date.
+    const delta = list
+      .filter((t) => t.date > anchorDate)
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const balance = Math.round((anchor + delta) * 100) / 100;
     await admin.from("accounts").update({ current_balance: balance }).eq("id", a.id);
     updated++;
+
+    // One-time history backfill: if nothing exists before the anchor date,
+    // reconstruct daily balances from the transaction stream.
+    if (list.length === 0) continue;
+    const { count } = await admin
+      .from("account_balance_snapshots")
+      .select("*", { count: "exact", head: true })
+      .eq("account_id", a.id)
+      .lt("as_of_date", anchorDate);
+    if ((count ?? 0) > 0) continue;
+
+    const start = list[0].date < anchorDate ? list[0].date : anchorDate;
+    // F(D) = sum of txns with date <= D; balance(D) = anchor + F(D) - F(anchorDate)
+    const fAnchor = list
+      .filter((t) => t.date <= anchorDate)
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const rows: {
+      account_id: string;
+      as_of_date: string;
+      balance: number;
+      currency: string;
+      source: string;
+    }[] = [];
+    let f = 0;
+    let i = 0;
+    const end = new Date();
+    for (
+      let d = new Date(`${start}T00:00:00`);
+      d <= end;
+      d.setDate(d.getDate() + 1)
+    ) {
+      const ds = d.toISOString().slice(0, 10);
+      while (i < list.length && list[i].date <= ds) {
+        f += Number(list[i].amount);
+        i++;
+      }
+      rows.push({
+        account_id: a.id as string,
+        as_of_date: ds,
+        balance: Math.round((anchor + f - fAnchor) * 100) / 100,
+        currency: a.currency as string,
+        source: "interpolated",
+      });
+    }
+    for (let j = 0; j < rows.length; j += 200) {
+      await admin
+        .from("account_balance_snapshots")
+        .upsert(rows.slice(j, j + 200), { onConflict: "account_id,as_of_date" });
+    }
   }
   return updated;
 }

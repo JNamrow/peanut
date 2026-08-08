@@ -1,7 +1,10 @@
+"use client";
+
 /* eslint-disable @next/next/no-img-element */
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 
-// Institution -> domain for favicon logos (Google favicon service).
+// Institution -> domain for logo lookup.
 const DOMAINS: Record<string, string> = {
   "Bank Leumi": "leumi.co.il",
   "Bank Hapoalim": "bankhapoalim.co.il",
@@ -18,6 +21,7 @@ const DOMAINS: Record<string, string> = {
   "Bank of America": "bankofamerica.com",
   "Wells Fargo": "wellsfargo.com",
   Fidelity: "fidelity.com",
+  "Charles Schwab": "schwab.com",
   Schwab: "schwab.com",
   Vanguard: "vanguard.com",
   Meitav: "meitav.co.il",
@@ -38,6 +42,10 @@ function domainFor(institution: string | null): string | null {
   return hit ? DOMAINS[hit] : null;
 }
 
+/**
+ * Brand logo with graceful fallback: icon.horse (hi-res) -> Google
+ * favicon -> letter monogram.
+ */
 export function InstitutionLogo({
   institution,
   fallback,
@@ -50,7 +58,15 @@ export function InstitutionLogo({
   className?: string;
 }) {
   const domain = domainFor(institution);
+  const [stage, setStage] = useState(0); // 0=google 1=icon.horse 2=letter
+  const [loaded, setLoaded] = useState(false);
   const initial = (fallback ?? institution ?? "?").slice(0, 1).toUpperCase();
+  const src =
+    stage === 0 && domain
+      ? `https://www.google.com/s2/favicons?domain=${domain}&sz=128`
+      : stage === 1 && domain
+        ? `https://icon.horse/icon/${domain}`
+        : null;
   return (
     <span
       className={cn(
@@ -61,14 +77,22 @@ export function InstitutionLogo({
       title={institution ?? undefined}
     >
       {initial}
-      {domain ? (
+      {src ? (
         <img
-          src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
+          src={src}
           alt={institution ?? ""}
           width={size}
           height={size}
-          className="absolute inset-0 h-full w-full rounded-full object-cover"
+          className={cn(
+            "absolute inset-0 h-full w-full rounded-full object-cover",
+            loaded ? "bg-card opacity-100" : "opacity-0",
+          )}
           loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => {
+            setLoaded(false);
+            setStage((s) => s + 1);
+          }}
         />
       ) : null}
     </span>
