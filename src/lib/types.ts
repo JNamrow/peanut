@@ -11,6 +11,8 @@ export interface SpaceMember {
   user_id: string;
   role: "owner" | "member";
   display_name: string | null;
+  birthday: string | null;
+  retirement_year: number | null;
 }
 
 export type AccountType =
@@ -44,6 +46,7 @@ export interface Account {
   linked_account_id: string | null;
   balance_anchor: number | null;
   balance_anchor_date: string | null;
+  forecast_include: boolean;
   is_liability: boolean;
   include_in_net_worth: boolean;
   hidden: boolean;

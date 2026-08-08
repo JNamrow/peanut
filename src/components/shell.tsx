@@ -16,6 +16,7 @@ const NAV: { slug: string; label: string }[] = [
   { slug: "recurring", label: "Recurring" },
   { slug: "goals", label: "Goals" },
   { slug: "investments", label: "Investments" },
+  { slug: "forecasting", label: "Forecasting" },
 ];
 
 export async function AppShell({ children }: { children: ReactNode }) {

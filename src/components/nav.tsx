@@ -12,6 +12,7 @@ import {
   PieChart,
   Wallet,
   CalendarClock,
+  Compass,
   Target,
   TrendingUp,
   Settings,
@@ -27,6 +28,7 @@ const icons: Record<string, LucideIcon> = {
   recurring: CalendarClock,
   goals: Target,
   investments: TrendingUp,
+  forecasting: Compass,
   settings: Settings,
 };
 
