@@ -4,6 +4,7 @@ import { addMonths, monthStart } from "@/lib/format";
 import {
   computeForecast,
   yearOf,
+  type ForecastAccount,
   type ForecastEvent,
   type ForecastIncome,
   type ForecastMember,
@@ -81,24 +82,22 @@ export default async function ForecastingPage() {
     );
   }
 
-  // ---- build inputs
-  const startNet: Record<string, number> = {};
-  const invested: Record<string, number> = {};
-  for (const a of included) {
+  // ---- build inputs. Each account grows at its own rate: an explicit
+  // per-account override, else the return assumption for invested money.
+  const returnPct = Number(settings.return_pct);
+  const defaultGrowth = (type: string) =>
+    type === "investment" || type === "pension" ? returnPct : 0;
+  const fAccounts: ForecastAccount[] = included.map((a) => {
     const v = Number(a.current_balance ?? 0);
-    const signed = a.is_liability ? -Math.abs(v) : v;
-    startNet[a.currency] = (startNet[a.currency] ?? 0) + signed;
-    if (a.type === "investment" || a.type === "pension") {
-      invested[a.currency] = (invested[a.currency] ?? 0) + Math.max(0, v);
-    }
-  }
-  const investedShare: Record<string, number> = {};
-  for (const c of currencies) {
-    const assets = included
-      .filter((a) => a.currency === c && !a.is_liability)
-      .reduce((s, a) => s + Number(a.current_balance ?? 0), 0);
-    investedShare[c] = assets > 0 ? (invested[c] ?? 0) / assets : 0;
-  }
+    return {
+      id: a.id,
+      name: a.name,
+      currency: a.currency,
+      balance: a.is_liability ? -Math.abs(v) : v,
+      growthPct: a.forecast_growth_pct ?? defaultGrowth(a.type),
+      yearlyContribution: Number(a.forecast_contribution ?? 0),
+    };
+  });
 
   const override = (settings.expenses_override ?? {}) as Record<string, number | null>;
   const baseExpenses: Record<string, number> = {};
@@ -145,17 +144,31 @@ export default async function ForecastingPage() {
 
   const result = computeForecast({
     currencies,
-    startNet,
-    investedShare,
+    accounts: fAccounts,
     baseExpenses,
     incomes: fIncomes,
     events: fEvents,
     members: fMembers,
     inflationPct: Number(settings.inflation_pct),
-    returnPct: Number(settings.return_pct),
+    returnPct,
     startYear: now,
     endYear,
   });
+
+  // Settings for the per-row account panel (gear on each account row).
+  const accountSettings = accounts
+    .filter((a) => !a.hidden && a.current_balance != null)
+    .map((a) => ({
+      id: a.id,
+      name: a.name,
+      institution: a.institution_name,
+      currency: a.currency,
+      type: a.type,
+      include: a.forecast_include,
+      growthPct: a.forecast_growth_pct,
+      defaultGrowthPct: defaultGrowth(a.type),
+      contribution: Number(a.forecast_contribution ?? 0),
+    }));
 
   return (
     <ForecastView
@@ -164,9 +177,10 @@ export default async function ForecastingPage() {
       members={fMembers}
       incomes={fIncomes}
       events={fEvents}
+      accountSettings={accountSettings}
       settings={{
         inflationPct: Number(settings.inflation_pct),
-        returnPct: Number(settings.return_pct),
+        returnPct,
         useActualExpenses: settings.use_actual_expenses,
         expensesOverride: override,
       }}

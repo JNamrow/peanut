@@ -158,3 +158,36 @@ export async function deleteForecastEvent(eventId: string): Promise<ForecastActi
   revalidatePath("/forecasting");
   return { error: error?.message ?? null };
 }
+
+/** Per-account forecast settings (the gear panel on an account row). */
+export async function updateForecastAccount(
+  accountId: string,
+  payload: string,
+): Promise<ForecastActionResult> {
+  const { supabase, space } = await getContext();
+  let data: {
+    include: boolean;
+    growthPct: number | null;
+    contribution: number;
+  };
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return { error: "Bad settings." };
+  }
+  const { error } = await supabase
+    .from("accounts")
+    .update({
+      forecast_include: !!data.include,
+      forecast_growth_pct:
+        data.growthPct == null || Number.isNaN(data.growthPct)
+          ? null
+          : data.growthPct,
+      forecast_contribution: Number(data.contribution) || 0,
+    })
+    .eq("id", accountId)
+    .eq("space_id", space.id);
+  if (error) return { error: error.message };
+  revalidatePath("/forecasting");
+  return { error: null };
+}

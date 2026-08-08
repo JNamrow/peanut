@@ -158,13 +158,32 @@ export async function syncPlaid(connectionId: string): Promise<{
     (conn.institution_name as string | null) ?? (conn.label as string | null),
   );
 
-  const { data: aliases } = await admin
-    .from("category_aliases")
-    .select("source_name, category_id")
-    .eq("space_id", spaceId)
-    .eq("source", "plaid");
+  const [{ data: aliases }, { data: rules }, { data: userCat }] =
+    await Promise.all([
+      admin
+        .from("category_aliases")
+        .select("source_name, category_id")
+        .eq("space_id", spaceId)
+        .eq("source", "plaid"),
+      admin
+        .from("category_rules")
+        .select("match_value, category_id")
+        .eq("space_id", spaceId)
+        .eq("match_type", "merchant"),
+      admin
+        .from("transactions")
+        .select("external_id")
+        .eq("connection_id", connectionId)
+        .eq("categorized_by", "user"),
+    ]);
   const aliasMap = new Map(
     (aliases ?? []).map((a) => [a.source_name as string, a.category_id as string]),
+  );
+  const ruleByMerchant = new Map(
+    (rules ?? []).map((r) => [r.match_value as string, r.category_id as string]),
+  );
+  const userCategorized = new Set(
+    (userCat ?? []).map((r) => r.external_id as string),
   );
 
   let cursor = (conn.config as Record<string, unknown>)?.txn_cursor as
@@ -192,29 +211,35 @@ export async function syncPlaid(connectionId: string): Promise<{
       const accountId = accountMap.get(t.account_id);
       if (!accountId) continue;
       const pfc = t.personal_finance_category?.primary ?? null;
-      const categoryId = pfc ? (aliasMap.get(pfc) ?? null) : null;
+      const merchant = t.merchant_name ?? t.name;
+      let categoryId = pfc ? (aliasMap.get(pfc) ?? null) : null;
       const isTransfer =
         pfc === "TRANSFER_IN" || pfc === "TRANSFER_OUT" || pfc === "LOAN_PAYMENTS";
-      const { error: upErr } = await admin.from("transactions").upsert(
-        {
-          space_id: spaceId,
-          account_id: accountId,
-          connection_id: connectionId,
-          source: "plaid",
-          external_id: t.transaction_id,
-          date: t.date,
-          name: t.merchant_name ?? t.name,
-          original_name: t.name,
-          amount: -t.amount, // Plaid: positive = outflow. Ours: negative = outflow.
-          currency: t.iso_currency_code ?? "USD",
-          category_id: categoryId,
-          categorized_by: categoryId ? "provider" : "none",
-          pending: t.pending,
-          is_transfer: isTransfer,
-          raw: t as unknown as Record<string, unknown>,
-        },
-        { onConflict: "connection_id,external_id" },
-      );
+      const ruleCat = !isTransfer ? ruleByMerchant.get(merchant) : undefined;
+      if (ruleCat) categoryId = ruleCat;
+      const row: Record<string, unknown> = {
+        space_id: spaceId,
+        account_id: accountId,
+        connection_id: connectionId,
+        source: "plaid",
+        external_id: t.transaction_id,
+        date: t.date,
+        name: merchant,
+        original_name: t.name,
+        amount: -t.amount, // Plaid: positive = outflow. Ours: negative = outflow.
+        currency: t.iso_currency_code ?? "USD",
+        pending: t.pending,
+        raw: t as unknown as Record<string, unknown>,
+      };
+      // Peanut wins: never clobber a user's recategorization on resync.
+      if (!userCategorized.has(t.transaction_id)) {
+        row.category_id = categoryId;
+        row.categorized_by = ruleCat ? "rule" : categoryId ? "provider" : "none";
+        row.is_transfer = isTransfer;
+      }
+      const { error: upErr } = await admin
+        .from("transactions")
+        .upsert(row, { onConflict: "connection_id,external_id" });
       if (upErr) throw new Error(`Upsert txn: ${upErr.message}`);
     }
     added += page.added.length;

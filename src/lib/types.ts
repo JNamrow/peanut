@@ -47,6 +47,8 @@ export interface Account {
   balance_anchor: number | null;
   balance_anchor_date: string | null;
   forecast_include: boolean;
+  forecast_growth_pct: number | null;
+  forecast_contribution: number;
   is_liability: boolean;
   include_in_net_worth: boolean;
   hidden: boolean;

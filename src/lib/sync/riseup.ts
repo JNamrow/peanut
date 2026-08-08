@@ -146,6 +146,14 @@ export async function syncRiseup(
   const userCategorized = new Set(
     (userCat ?? []).map((r) => r.external_id as string),
   );
+  const { data: rules } = await admin
+    .from("category_rules")
+    .select("match_value, category_id")
+    .eq("space_id", spaceId)
+    .eq("match_type", "merchant");
+  const ruleByMerchant = new Map(
+    (rules ?? []).map((r) => [r.match_value as string, r.category_id as string]),
+  );
   const accountByHash = new Map(
     (accounts ?? []).map((a) => [a.external_id as string, a.id as string]),
   );
@@ -256,11 +264,17 @@ export async function syncRiseup(
         currency: "ILS",
         raw: t as unknown as Record<string, unknown>,
       };
+      // Merchant rules beat the provider label (but never transfer detection).
+      const ruleCat = !cardBill
+        ? ruleByMerchant.get(t.businessName ?? "")
+        : undefined;
+      if (ruleCat) categoryId = ruleCat;
       // Peanut wins: only write category fields if the user has not
       // recategorized this transaction.
       if (!userCategorized.has(t.transactionId)) {
         row.category_id = categoryId;
-        row.categorized_by = cardBill ? "rule" : categoryId ? "provider" : "none";
+        row.categorized_by =
+          cardBill || ruleCat ? "rule" : categoryId ? "provider" : "none";
         row.is_transfer = cardBill;
       }
       const { error: upErr } = await admin

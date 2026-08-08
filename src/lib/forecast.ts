@@ -1,7 +1,8 @@
 // Deterministic yearly net-worth projection, per currency (never mixed).
-// Model: net(y+1) = net(y) + income − expenses(inflated) + growth on the
-// invested share + events. Incomes tied to a member stop at that member's
-// retirement year.
+// Model: each account compounds at its own rate and receives its yearly
+// direct contribution; net savings (income − expenses − contributions)
+// pile up in a 0%-growth "Extra savings" bucket. Incomes tied to a member
+// stop at that member's retirement year.
 
 export interface ForecastMember {
   userId: string;
@@ -31,10 +32,18 @@ export interface ForecastEvent {
   currency: string;
 }
 
+export interface ForecastAccount {
+  id: string;
+  name: string;
+  currency: string;
+  balance: number; // signed: liabilities negative
+  growthPct: number; // effective yearly rate for THIS account
+  yearlyContribution: number; // today's money; inflates each year
+}
+
 export interface ForecastInputs {
   currencies: string[];
-  startNet: Record<string, number>; // per currency, forecast accounts only
-  investedShare: Record<string, number>; // 0..1 per currency
+  accounts: ForecastAccount[]; // forecast-included accounts only
   baseExpenses: Record<string, number>; // yearly, per currency
   incomes: ForecastIncome[];
   events: ForecastEvent[];
@@ -54,8 +63,15 @@ export interface ForecastYearRow {
   events: ForecastEvent[];
 }
 
+export interface ForecastAccountRow {
+  id: string | null; // null = the Extra savings bucket
+  name: string;
+  series: number[]; // one balance per year, same order as the year rows
+}
+
 export interface ForecastResult {
   byCurrency: Record<string, ForecastYearRow[]>;
+  accountRows: Record<string, ForecastAccountRow[]>; // per currency
   retirementYear: number | null; // earliest member retirement
 }
 
@@ -69,10 +85,14 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
     : null;
 
   const byCurrency: Record<string, ForecastYearRow[]> = {};
+  const accountRows: Record<string, ForecastAccountRow[]> = {};
   for (const ccy of inputs.currencies) {
     const rows: ForecastYearRow[] = [];
-    let net = inputs.startNet[ccy] ?? 0;
-    const share = Math.max(0, Math.min(1, inputs.investedShare[ccy] ?? 0));
+    const accs = inputs.accounts.filter((a) => a.currency === ccy);
+    const balances = accs.map((a) => a.balance);
+    const series: number[][] = accs.map(() => []);
+    const extraSeries: number[] = [];
+    let extra = 0; // savings not directed at any account; grows at 0%
     for (let year = inputs.startYear; year <= inputs.endYear; year++) {
       const yearsOut = year - inputs.startYear;
       const inflate = Math.pow(1 + inputs.inflationPct / 100, yearsOut);
@@ -102,9 +122,19 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
         else expenses += ev.amount;
       }
 
-      const growth = net > 0 ? net * share * (inputs.returnPct / 100) : 0;
+      let contributions = 0;
+      let net = 0;
+      for (let i = 0; i < accs.length; i++) {
+        const contrib = accs[i].yearlyContribution * inflate;
+        contributions += contrib;
+        balances[i] = balances[i] * (1 + accs[i].growthPct / 100) + contrib;
+        series[i].push(Math.round(balances[i]));
+        net += balances[i];
+      }
       const savings = income - expenses;
-      net = net + savings + growth;
+      extra += savings - contributions;
+      extraSeries.push(Math.round(extra));
+      net += extra;
       rows.push({
         year,
         netWorth: Math.round(net),
@@ -115,8 +145,12 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
       });
     }
     byCurrency[ccy] = rows;
+    accountRows[ccy] = [
+      ...accs.map((a, i) => ({ id: a.id, name: a.name, series: series[i] })),
+      { id: null, name: "Extra savings", series: extraSeries },
+    ];
   }
-  return { byCurrency, retirementYear };
+  return { byCurrency, accountRows, retirementYear };
 }
 
 export function yearOf(dateStr: string | null): number | null {

@@ -462,6 +462,95 @@ export async function upsertBudget(
 
 // -------------------------------------------------------------- categories
 
+export async function createCategory(payload: string): Promise<{
+  error: string | null;
+  id?: string;
+}> {
+  const { supabase, space } = await getContext();
+  let data: {
+    name: string;
+    name_he: string | null;
+    icon: string | null;
+    color: string | null;
+    group: string;
+    kind: "income" | "expense";
+    budget_bucket?: "fixed" | "flexible" | "non_monthly";
+  };
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return { error: "Bad category data." };
+  }
+  if (!data.name?.trim()) return { error: "Name is required." };
+  const { data: row, error } = await supabase
+    .from("categories")
+    .insert({
+      space_id: space.id,
+      name: data.name.trim(),
+      name_he: data.name_he?.trim() || null,
+      icon: data.icon || "🏷️",
+      color: data.color,
+      group: data.group?.trim() || "Custom",
+      kind: data.kind === "income" ? "income" : "expense",
+      budget_bucket: data.kind === "income" ? null : (data.budget_bucket ?? "flexible"),
+      display_order: 9000,
+    })
+    .select("id")
+    .single();
+  if (error) {
+    if (error.code === "23505") return { error: "A category with that name exists." };
+    return { error: error.message };
+  }
+  revalidatePath("/transactions");
+  revalidatePath("/budget");
+  return { error: null, id: row.id as string };
+}
+
+/**
+ * Scope a recategorization: optionally create a merchant rule for future
+ * syncs and/or fix all historical transactions from this merchant.
+ */
+export async function applyCategoryScope(
+  txnId: string,
+  categoryId: string,
+  scope: { future: boolean; historical: boolean },
+): Promise<{ error: string | null; updated?: number }> {
+  const { supabase, space } = await getContext();
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("id, name")
+    .eq("id", txnId)
+    .maybeSingle();
+  if (!txn) return { error: "Transaction not found." };
+
+  if (scope.future) {
+    const { error } = await supabase.from("category_rules").upsert(
+      {
+        space_id: space.id,
+        match_type: "merchant",
+        match_value: txn.name,
+        category_id: categoryId,
+      },
+      { onConflict: "space_id,match_type,match_value" },
+    );
+    if (error) return { error: error.message };
+  }
+
+  let updated = 0;
+  if (scope.historical) {
+    const { data, error } = await supabase
+      .from("transactions")
+      .update({ category_id: categoryId, categorized_by: "user" })
+      .eq("space_id", space.id)
+      .eq("name", txn.name)
+      .select("id");
+    if (error) return { error: error.message };
+    updated = data?.length ?? 0;
+  }
+  revalidatePath("/transactions");
+  return { error: null, updated };
+}
+
 export async function updateCategory(
   categoryId: string,
   patch: {

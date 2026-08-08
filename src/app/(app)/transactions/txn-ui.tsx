@@ -10,6 +10,7 @@ import { TxnPeek } from "./txn-peek";
 import { fmtMoney, longDate, shortDate } from "@/lib/format";
 import type { Account, Category, Transaction } from "@/lib/types";
 import {
+  applyCategoryScope,
   addManualTransaction,
   renameMerchant,
   setTransactionCategory,
@@ -491,7 +492,10 @@ function TxnRow({
   // still show fresh server data after refresh.
   const [nameOverride, setNameOverride] = useState<string | null>(null);
   const merchantRef = useRef<HTMLDivElement>(null);
+  const scopeRef = useRef<HTMLDivElement>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  // Category id waiting for a "how far should this apply?" choice.
+  const [scopeFor, setScopeFor] = useState<string | null>(null);
   const [peekOpen, setPeekOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [applyAll, setApplyAll] = useState(true);
@@ -501,12 +505,25 @@ function TxnRow({
   const name = nameOverride ?? txn.name;
 
   useDismiss(merchantRef, editorOpen, () => setEditorOpen(false));
+  useDismiss(scopeRef, scopeFor !== null, () => setScopeFor(null));
 
   // Shared by the row's picker and the side peek so both stay in sync.
   function selectCategory(id: string) {
+    const changed = id !== "" && id !== localCat;
     setLocalCat(id);
     startTransition(async () => {
       await setTransactionCategory(txn.id, id);
+      router.refresh();
+    });
+    setScopeFor(changed ? id : null);
+  }
+
+  function applyScope(future: boolean, historical: boolean) {
+    const catId = scopeFor;
+    if (!catId) return;
+    setScopeFor(null);
+    startTransition(async () => {
+      await applyCategoryScope(txn.id, catId, { future, historical });
       router.refresh();
     });
   }
@@ -622,7 +639,7 @@ function TxnRow({
         </div>
       </div>
 
-      <div className="flex min-w-0 items-center gap-1">
+      <div className="relative flex min-w-0 items-center gap-1">
         <CategoryPicker
           categories={categories}
           value={localCat}
@@ -638,6 +655,37 @@ function TxnRow({
           >
             <ChevronRight size={14} />
           </button>
+        ) : null}
+
+        {scopeFor ? (
+          <div
+            ref={scopeRef}
+            className="absolute left-0 top-full z-50 mt-1 w-[264px] rounded-card border border-line bg-card p-1.5 shadow-pop"
+          >
+            <p className="px-2 pb-1 pt-1 text-[12px] text-muted" dir="auto">
+              Use “{categories.find((c) => c.id === scopeFor)?.name ?? "this"}”
+              for <span className="font-medium text-ink">{name}</span>:
+            </p>
+            {(
+              [
+                ["Only this transaction", null],
+                ["All future transactions", [true, false]],
+                ["Future + all past transactions", [true, true]],
+              ] as [string, [boolean, boolean] | null][]
+            ).map(([label, opt]) => (
+              <button
+                key={label}
+                type="button"
+                disabled={pending}
+                onClick={() =>
+                  opt ? applyScope(opt[0], opt[1]) : setScopeFor(null)
+                }
+                className="block w-full cursor-pointer rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-hover disabled:opacity-50"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         ) : null}
       </div>
 

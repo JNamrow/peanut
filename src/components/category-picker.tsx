@@ -9,11 +9,11 @@ import {
   type RefObject,
 } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Ellipsis, Search } from "lucide-react";
+import { Check, Ellipsis, Plus, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonCls, inputCls } from "@/components/ui";
 import type { Category } from "@/lib/types";
-import { updateCategory } from "@/app/(app)/actions";
+import { createCategory, updateCategory } from "@/app/(app)/actions";
 
 const SWATCHES = [
   "#63b3d9",
@@ -94,12 +94,16 @@ export function CategoryPicker({
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<EditDraft>({
     name: "",
     name_he: "",
     icon: "",
     color: null,
   });
+  const [extra, setExtra] = useState<{ group: string; kind: "expense" | "income" }>(
+    { group: "Custom", kind: "expense" },
+  );
   const [editError, setEditError] = useState<string | null>(null);
   // Optimistic edits so the picker reflects a save before the server refresh.
   const [patched, setPatched] = useState<Record<string, Partial<Category>>>({});
@@ -107,6 +111,7 @@ export function CategoryPicker({
 
   function closeEdit() {
     setEditingId(null);
+    setCreating(false);
     setEditError(null);
   }
 
@@ -127,7 +132,7 @@ export function CategoryPicker({
     }
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (editingId !== null) closeEdit();
+      if (editingId !== null || creating) closeEdit();
       else close();
     }
     document.addEventListener("mousedown", onDown);
@@ -137,7 +142,7 @@ export function CategoryPicker({
       document.removeEventListener("keydown", onKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, editingId]);
+  }, [open, editingId, creating]);
 
   useEffect(() => {
     if (open) searchRef.current?.focus();
@@ -173,12 +178,47 @@ export function CategoryPicker({
 
   function startEdit(c: Category) {
     setEditingId(c.id);
+    setCreating(false);
     setEditError(null);
     setDraft({
       name: c.name,
       name_he: c.name_he ?? "",
       icon: c.icon ?? "",
       color: c.color ?? null,
+    });
+  }
+
+  function startCreate() {
+    setEditingId(null);
+    setCreating(true);
+    setEditError(null);
+    setDraft({ name: q.trim(), name_he: "", icon: "", color: null });
+    setExtra({ group: "Custom", kind: "expense" });
+  }
+
+  function saveCreate() {
+    if (!draft.name.trim()) {
+      setEditError("Name is required");
+      return;
+    }
+    startSaving(async () => {
+      const res = await createCategory(
+        JSON.stringify({
+          name: draft.name.trim(),
+          name_he: draft.name_he.trim() || null,
+          icon: draft.icon.trim() || null,
+          color: draft.color,
+          group: extra.group.trim() || "Custom",
+          kind: extra.kind,
+        }),
+      );
+      if (res.error || !res.id) {
+        setEditError(res.error ?? "Could not create category.");
+        return;
+      }
+      router.refresh();
+      onSelect(res.id);
+      close();
     });
   }
 
@@ -358,10 +398,29 @@ export function CategoryPicker({
                 ))
               )}
             </div>
+
+            <div className="sticky bottom-0 border-t border-line bg-card p-1.5">
+              <button
+                type="button"
+                onClick={startCreate}
+                className={cn(
+                  "flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium hover:bg-hover",
+                  creating ? "text-ink" : "text-accent",
+                )}
+              >
+                <Plus size={14} />
+                New category
+              </button>
+            </div>
           </div>
 
-          {editing ? (
+          {editing || creating ? (
             <div className="absolute left-full top-0 z-60 ml-1 flex w-[260px] flex-col gap-2.5 rounded-card border border-line bg-card p-2.5 shadow-pop">
+              {creating ? (
+                <div className="text-[11px] font-medium uppercase tracking-wide text-faint">
+                  New category
+                </div>
+              ) : null}
               <input
                 value={draft.name}
                 onChange={(e) =>
@@ -434,6 +493,37 @@ export function CategoryPicker({
                 </div>
               </div>
 
+              {creating ? (
+                <>
+                  <input
+                    value={extra.group}
+                    onChange={(e) =>
+                      setExtra((x) => ({ ...x, group: e.target.value }))
+                    }
+                    placeholder="Group (e.g. Custom)"
+                    dir="auto"
+                    className={cn(inputCls, "h-8 text-[13px]")}
+                  />
+                  <div className="flex overflow-hidden rounded-md border border-line text-[12.5px]">
+                    {(["expense", "income"] as const).map((k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setExtra((x) => ({ ...x, kind: k }))}
+                        className={cn(
+                          "flex-1 cursor-pointer py-1.5 capitalize",
+                          extra.kind === k
+                            ? "bg-active font-medium text-ink"
+                            : "text-muted hover:bg-hover",
+                        )}
+                      >
+                        {k}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+
               {editError ? (
                 <p className="text-[12px] text-neg">{editError}</p>
               ) : null}
@@ -449,9 +539,15 @@ export function CategoryPicker({
                   type="button"
                   className={buttonCls("primary", "sm")}
                   disabled={saving}
-                  onClick={() => saveEdit(editing.id)}
+                  onClick={() =>
+                    creating ? saveCreate() : editing && saveEdit(editing.id)
+                  }
                 >
-                  {saving ? "Saving…" : "Save"}
+                  {saving
+                    ? "Saving…"
+                    : creating
+                      ? "Create"
+                      : "Save"}
                 </button>
               </div>
             </div>

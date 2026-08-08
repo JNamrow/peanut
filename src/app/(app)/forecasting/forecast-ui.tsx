@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Pencil, Plus, Trash2, X } from "lucide-react";
+import { Pencil, Plus, Settings, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtMoney } from "@/lib/format";
 import { buttonCls, Card, CardHeader, PageHeader, inputCls, selectCls } from "@/components/ui";
@@ -27,6 +27,7 @@ import {
   addForecastEvent,
   deleteForecastEvent,
   updateAssumptions,
+  updateForecastAccount,
 } from "./forecast-actions";
 
 const ILS_COLOR = "#1a9a5c";
@@ -40,12 +41,28 @@ interface Settings {
   expensesOverride: Record<string, number | null>;
 }
 
+export interface AccountSetting {
+  id: string;
+  name: string;
+  institution: string | null;
+  currency: string;
+  type: string;
+  include: boolean;
+  growthPct: number | null; // null = use the default for the type
+  defaultGrowthPct: number;
+  contribution: number;
+}
+
+// One side slot, Monarch-style: assumptions or one account's settings.
+type Panel = { kind: "assumptions" } | { kind: "account"; id: string } | null;
+
 export function ForecastView({
   result,
   currencies,
   members,
   incomes,
   events,
+  accountSettings,
   settings,
   actualExpenses,
 }: {
@@ -54,12 +71,17 @@ export function ForecastView({
   members: ForecastMember[];
   incomes: ForecastIncome[];
   events: ForecastEvent[];
+  accountSettings: AccountSetting[];
   settings: Settings;
   actualExpenses: Record<string, number>;
 }) {
   const [tab, setTab] = useState<"accounts" | "cashflow" | "events">("accounts");
-  const [assumptionsOpen, setAssumptionsOpen] = useState(false);
+  const [panel, setPanel] = useState<Panel>(null);
   const [eventOpen, setEventOpen] = useState(false);
+  const panelAccount =
+    panel?.kind === "account"
+      ? accountSettings.find((a) => a.id === panel.id)
+      : undefined;
 
   const now = new Date().getFullYear();
   const chartData = useMemo(() => {
@@ -118,7 +140,12 @@ export function ForecastView({
         }
         right={
           <>
-            <button className={buttonCls("secondary")} onClick={() => setAssumptionsOpen((v) => !v)}>
+            <button
+              className={buttonCls("secondary")}
+              onClick={() =>
+                setPanel((p) => (p?.kind === "assumptions" ? null : { kind: "assumptions" }))
+              }
+            >
               <Pencil size={13.5} /> Edit assumptions
             </button>
             <button className={buttonCls("primary")} onClick={() => setEventOpen(true)}>
@@ -130,7 +157,7 @@ export function ForecastView({
       <div
         className={cn(
           "grid grid-cols-1 gap-4 px-6 pt-2",
-          assumptionsOpen && "xl:grid-cols-[1fr_340px]",
+          panel && "xl:grid-cols-[minmax(0,1fr)_340px]",
         )}
       >
         <div className="flex flex-col gap-4">
@@ -303,16 +330,13 @@ export function ForecastView({
                   <tbody>
                     {currencies.map((ccy) =>
                       tab === "accounts" ? (
-                        <tr key={ccy} className="border-t border-line">
-                          <td className="sticky left-0 bg-card py-1.5 pr-3 font-semibold">
-                            {ccy === "ILS" ? "₪ ILS" : "$ USD"}
-                          </td>
-                          {(result.byCurrency[ccy] ?? []).map((r) => (
-                            <td key={r.year} className="tnum px-2 py-1.5 text-right">
-                              {fmtMoney(r.netWorth, ccy, { compact: true })}
-                            </td>
-                          ))}
-                        </tr>
+                        <AccountsRows
+                          key={ccy}
+                          ccy={ccy}
+                          result={result}
+                          onOpenSettings={(id) => setPanel({ kind: "account", id })}
+                          activeId={panel?.kind === "account" ? panel.id : null}
+                        />
                       ) : (
                         [
                           ["Income", "income"],
@@ -348,24 +372,235 @@ export function ForecastView({
               ) : (
                 <EventList events={events} />
               )}
+              {tab === "accounts" &&
+              accountSettings.some((a) => !a.include) ? (
+                <div className="flex flex-wrap items-center gap-1.5 pt-3 text-[12px] text-muted">
+                  <span>Excluded from forecast:</span>
+                  {accountSettings
+                    .filter((a) => !a.include)
+                    .map((a) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => setPanel({ kind: "account", id: a.id })}
+                        className="flex cursor-pointer items-center gap-1 rounded-full bg-active px-2 py-0.5 hover:text-ink"
+                      >
+                        {a.name}
+                        <Settings size={11} />
+                      </button>
+                    ))}
+                </div>
+              ) : null}
             </div>
           </Card>
         </div>
 
-        {assumptionsOpen ? (
+        {panel?.kind === "assumptions" ? (
           <AssumptionsPanel
             members={members}
             incomes={incomes}
             settings={settings}
             actualExpenses={actualExpenses}
             currencies={currencies}
-            onClose={() => setAssumptionsOpen(false)}
+            onClose={() => setPanel(null)}
+          />
+        ) : panelAccount ? (
+          <AccountPanel
+            key={panelAccount.id}
+            account={panelAccount}
+            onClose={() => setPanel(null)}
           />
         ) : null}
       </div>
 
       {eventOpen ? <AddEventModal onClose={() => setEventOpen(false)} /> : null}
     </>
+  );
+}
+
+/** One currency block: net-worth total row, then one row per account. */
+function AccountsRows({
+  ccy,
+  result,
+  onOpenSettings,
+  activeId,
+}: {
+  ccy: string;
+  result: ForecastResult;
+  onOpenSettings: (id: string) => void;
+  activeId: string | null;
+}) {
+  const rows = result.byCurrency[ccy] ?? [];
+  const accountRows = result.accountRows[ccy] ?? [];
+  return (
+    <>
+      <tr className="border-t border-line">
+        <td className="sticky left-0 bg-card py-1.5 pr-3 font-semibold">
+          {ccy === "ILS" ? "₪ ILS" : "$ USD"} net worth
+        </td>
+        {rows.map((r) => (
+          <td key={r.year} className="tnum px-2 py-1.5 text-right font-semibold">
+            {fmtMoney(r.netWorth, ccy, { compact: true })}
+          </td>
+        ))}
+      </tr>
+      {accountRows.map((a) => (
+        <tr key={a.id ?? "extra"} className="group/frow border-t border-line">
+          <td className="sticky left-0 bg-card py-1 pl-3 pr-3">
+            <span className="flex items-center gap-1">
+              <span
+                className={cn("truncate", a.id == null && "text-muted")}
+                dir="auto"
+              >
+                {a.name}
+              </span>
+              {a.id ? (
+                <button
+                  type="button"
+                  title={`${a.name} forecast settings`}
+                  onClick={() => onOpenSettings(a.id!)}
+                  className={cn(
+                    "shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink",
+                    activeId === a.id
+                      ? "text-ink"
+                      : "invisible group-hover/frow:visible",
+                  )}
+                >
+                  <Settings size={12.5} />
+                </button>
+              ) : null}
+            </span>
+          </td>
+          {a.series.map((v, i) => (
+            <td
+              key={rows[i]?.year ?? i}
+              className="tnum px-2 py-1 text-right text-muted"
+            >
+              {fmtMoney(v, ccy, { compact: true })}
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+/** Monarch-style per-account settings in the side slot. */
+function AccountPanel({
+  account,
+  onClose,
+}: {
+  account: AccountSetting;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [growth, setGrowth] = useState(
+    account.growthPct == null ? "" : String(account.growthPct),
+  );
+  const [contribution, setContribution] = useState(
+    account.contribution ? String(account.contribution) : "",
+  );
+  const [include, setInclude] = useState(account.include);
+
+  function save() {
+    setError(null);
+    startTransition(async () => {
+      const result = await updateForecastAccount(
+        account.id,
+        JSON.stringify({
+          include,
+          growthPct: growth.trim() === "" ? null : Number(growth),
+          contribution: Number(contribution) || 0,
+        }),
+      );
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      router.refresh();
+    });
+  }
+
+  const sym = account.currency === "ILS" ? "₪" : "$";
+  return (
+    <Card className="h-fit">
+      <CardHeader
+        title={
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate" dir="auto">
+              {account.name}
+            </span>
+            <span className="shrink-0 text-[12px] font-normal text-muted">
+              {sym} {account.institution ?? account.type}
+            </span>
+          </span>
+        }
+        right={
+          <button onClick={onClose} className="cursor-pointer text-muted hover:text-ink">
+            <X size={16} />
+          </button>
+        }
+      />
+      <div className="flex flex-col gap-3.5 px-5 pb-5 text-[13px]">
+        <label className="flex items-center justify-between gap-2">
+          <span>
+            <span className="block font-semibold">Change over time</span>
+            <span className="block text-[12px] text-muted">
+              Yearly growth for this account
+            </span>
+          </span>
+          <input
+            type="number"
+            step="0.1"
+            value={growth}
+            placeholder={String(account.defaultGrowthPct)}
+            onChange={(e) => setGrowth(e.target.value)}
+            className={`${inputCls} h-8 w-[80px]`}
+          />
+        </label>
+        <p className="-mt-2 text-[11.5px] text-faint">
+          Blank = default ({account.defaultGrowthPct}% for this account type).
+        </p>
+
+        <label className="flex items-center justify-between gap-2">
+          <span>
+            <span className="block font-semibold">Yearly direct contribution</span>
+            <span className="block text-[12px] text-muted">
+              Moved here from extra savings each year
+            </span>
+          </span>
+          <input
+            type="number"
+            value={contribution}
+            placeholder="0"
+            onChange={(e) => setContribution(e.target.value)}
+            className={`${inputCls} h-8 w-[100px]`}
+          />
+        </label>
+
+        <label className="flex items-center justify-between gap-2">
+          <span>
+            <span className="block font-semibold">Exclude from forecast</span>
+            <span className="block text-[12px] text-muted">
+              Leave this account out of all projections
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={!include}
+            onChange={(e) => setInclude(!e.target.checked)}
+            className="h-4 w-4 accent-[#ee6a3c]"
+          />
+        </label>
+
+        {error ? <p className="text-neg">{error}</p> : null}
+        <button className={buttonCls("primary")} disabled={pending} onClick={save}>
+          {pending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </Card>
   );
 }
 
