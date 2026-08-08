@@ -12,6 +12,7 @@ export default async function TransactionsPage({
     q?: string;
     account?: string;
     category?: string;
+    flow?: string;
     month?: string;
     from?: string;
     to?: string;
@@ -32,10 +33,12 @@ export default async function TransactionsPage({
     end.setDate(0); // last day of the month
     to = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
   }
+  const flow = raw.flow === "in" || raw.flow === "out" ? raw.flow : undefined;
   const params = {
     q: raw.q,
     account: raw.account,
     category: raw.category,
+    flow,
     from,
     to,
     page: raw.page,
@@ -50,9 +53,31 @@ export default async function TransactionsPage({
     .order("created_at", { ascending: false })
     .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
-  if (params.q) query = query.ilike("name", `%${params.q}%`);
+  if (params.q) {
+    // Search also matches category names (English or Hebrew) against the
+    // already-loaded categories, widening the query to those category ids.
+    const needle = params.q.toLowerCase();
+    const catIds = categories
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(needle) ||
+          (c.name_he ?? "").toLowerCase().includes(needle),
+      )
+      .map((c) => c.id);
+    if (catIds.length > 0) {
+      // or() parses commas/parens as syntax, so strip them from the pattern.
+      const safeQ = params.q.replace(/[(),]/g, "");
+      query = query.or(
+        `name.ilike.%${safeQ}%,category_id.in.(${catIds.join(",")})`,
+      );
+    } else {
+      query = query.ilike("name", `%${params.q}%`);
+    }
+  }
   if (params.account) query = query.eq("account_id", params.account);
   if (params.category) query = query.eq("category_id", params.category);
+  if (flow === "in") query = query.gt("amount", 0);
+  if (flow === "out") query = query.lt("amount", 0);
   if (from) query = query.gte("date", from);
   if (to) query = query.lte("date", to);
 

@@ -66,12 +66,13 @@ export default async function ReportsPage({
   }
 
   function bucketBy(kind: "income" | "expense") {
-    const buckets = new Map<string, { label: string; icon: string | null; value: number }>();
+    const buckets = new Map<string, { label: string; labelHe: string | null; icon: string | null; value: number }>();
     for (const t of list) {
       if (kindFor(t) !== kind) continue;
       const v = Math.abs(Number(t.amount));
       const cat = t.category_id ? catById.get(t.category_id) : null;
       let key: string, label: string, icon: string | null;
+      let labelHe: string | null = null;
       if (by === "merchant") {
         key = label = t.name;
         icon = null;
@@ -81,9 +82,10 @@ export default async function ReportsPage({
       } else {
         key = cat?.id ?? "un";
         label = cat?.name ?? "Uncategorized";
+        labelHe = cat?.name_he ?? null;
         icon = cat?.icon ?? null;
       }
-      const b = buckets.get(key) ?? { label, icon, value: 0 };
+      const b = buckets.get(key) ?? { label, labelHe, icon, value: 0 };
       b.value += v;
       buckets.set(key, b);
     }
@@ -391,6 +393,11 @@ export default async function ReportsPage({
                   <span className="w-[45%] truncate text-[13px] font-medium" dir="auto">
                     {r.icon ? `${r.icon} ` : ""}
                     {r.label}
+                    {r.labelHe && r.labelHe !== r.label ? (
+                      <span className="ml-1.5 font-normal text-muted">
+                        · {r.labelHe}
+                      </span>
+                    ) : null}
                   </span>
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-active">
                     <div
@@ -443,7 +450,7 @@ function RankRow({
   currency,
   color,
 }: {
-  row: { label: string; icon: string | null; value: number };
+  row: { label: string; labelHe?: string | null; icon: string | null; value: number };
   max: number;
   currency: string;
   color: string;
@@ -458,6 +465,9 @@ function RankRow({
         <span className="flex items-center gap-1.5 text-[13px] font-medium" dir="auto">
           {row.icon ? <span>{row.icon}</span> : null}
           {row.label}
+          {row.labelHe && row.labelHe !== row.label ? (
+            <span className="font-normal text-muted">· {row.labelHe}</span>
+          ) : null}
         </span>
         <span className="tnum text-[13px]">
           {fmtMoney(row.value, currency, { decimals: false })}

@@ -102,6 +102,7 @@ export interface Transaction {
   categorized_by: "none" | "provider" | "rule" | "user";
   notes: string | null;
   tags: string[];
+  attachments: string[];
   pending: boolean;
   is_transfer: boolean;
   hide_from_reports: boolean;

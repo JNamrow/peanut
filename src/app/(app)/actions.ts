@@ -56,6 +56,80 @@ export async function addManualTransaction(formData: FormData) {
   revalidatePath("/transactions");
 }
 
+export async function updateTransactionNotes(txnId: string, notes: string) {
+  const { supabase } = await getContext();
+  await supabase
+    .from("transactions")
+    .update({ notes: notes.trim() || null })
+    .eq("id", txnId);
+  revalidatePath("/transactions");
+}
+
+/** Upload a receipt file to private storage and attach it. */
+export async function uploadReceipt(
+  txnId: string,
+  formData: FormData,
+): Promise<{ error: string | null }> {
+  const { supabase, space } = await getContext();
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) return { error: "No file chosen." };
+  if (file.size > 10 * 1024 * 1024) return { error: "Max 10MB." };
+
+  // RLS check: the txn must be visible to this user.
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("id, attachments")
+    .eq("id", txnId)
+    .maybeSingle();
+  if (!txn) return { error: "Transaction not found." };
+
+  const admin = createAdminClient();
+  const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-60);
+  const path = `${space.id}/${txnId}/${Date.now()}_${safe}`;
+  const { error: upErr } = await admin.storage
+    .from("receipts")
+    .upload(path, Buffer.from(await file.arrayBuffer()), {
+      contentType: file.type || "application/octet-stream",
+    });
+  if (upErr) return { error: upErr.message };
+
+  await supabase
+    .from("transactions")
+    .update({ attachments: [...(txn.attachments ?? []), path] })
+    .eq("id", txnId);
+  revalidatePath("/transactions");
+  return { error: null };
+}
+
+/** Signed URL for a private receipt (1 hour). */
+export async function receiptUrl(path: string): Promise<string | null> {
+  const { space } = await getContext();
+  if (!path.startsWith(`${space.id}/`)) return null; // space isolation
+  const admin = createAdminClient();
+  const { data } = await admin.storage
+    .from("receipts")
+    .createSignedUrl(path, 3600);
+  return data?.signedUrl ?? null;
+}
+
+export async function removeReceipt(txnId: string, path: string) {
+  const { supabase, space } = await getContext();
+  if (!path.startsWith(`${space.id}/`)) return;
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("attachments")
+    .eq("id", txnId)
+    .maybeSingle();
+  if (!txn) return;
+  const admin = createAdminClient();
+  await admin.storage.from("receipts").remove([path]);
+  await supabase
+    .from("transactions")
+    .update({ attachments: (txn.attachments ?? []).filter((p: string) => p !== path) })
+    .eq("id", txnId);
+  revalidatePath("/transactions");
+}
+
 export async function renameMerchant(
   txnId: string,
   newName: string,

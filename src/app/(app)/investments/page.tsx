@@ -163,18 +163,14 @@ export default async function InvestmentsPage({
     if (bt && bt.length > 1) backtested = bt;
   }
 
-  // Benchmark % over the same window for every benchmark (comparison
-  // cells) + the selected one as a chart overlay. USD only.
+  // Benchmark % over the SELECTED RANGE (not the portfolio window), so the
+  // chart is useful even on day one of portfolio history. USD only.
   const benchStats: { key: BenchmarkKey; label: string; pct: number }[] = [];
   let benchSeries: PerfSeries | null = null;
-  if (tab === "holdings") {
-    const snapUsd = seriesByCcy.get("USD") ?? [];
-    const usd =
-      backtested ??
-      snapUsd.map((p) => ({ date: p.date, pct: 0 })); // dates only below
-    if (usd.length > 1) {
-      const startDate = usd[0].date;
-      const endDate = usd[usd.length - 1].date;
+  if (tab === "holdings" && currencies.includes("USD")) {
+    {
+      const startDate = since.toISOString().slice(0, 10);
+      const endDate = new Date().toISOString().slice(0, 10);
       const keys = Object.keys(BENCHMARKS) as BenchmarkKey[];
       const allCloses = await Promise.all(
         keys.map((k) => getBenchmarkCloses(k, startDate)),
@@ -328,8 +324,7 @@ export default async function InvestmentsPage({
                   pct: ((p.value - base) / Math.abs(base)) * 100,
                 })),
               });
-              if (ccy === "USD" && rawSeries.length > 1 && benchSeries)
-                perf.push(benchSeries);
+              if (ccy === "USD" && benchSeries) perf.push(benchSeries);
             }
             const ccyAccounts = invAccounts.filter((a) => a.currency === ccy);
             const noHoldingsHint =
@@ -349,7 +344,7 @@ export default async function InvestmentsPage({
                   />
                   <div className="grid grid-flow-col auto-cols-fr divide-x divide-line border-y border-line">
                     <PerfCell label="Your Portfolio" pct={changePct} />
-                    {ccy === "USD" && hasRealHistory
+                    {ccy === "USD"
                       ? benchStats.map((b) => (
                           <PerfCell
                             key={b.key}

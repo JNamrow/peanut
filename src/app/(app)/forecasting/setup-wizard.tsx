@@ -51,34 +51,15 @@ export function SetupWizard({
     Object.fromEntries(members.map((m) => [m.userId, 65])),
   );
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
-  const [incomes, setIncomes] = useState<WizIncome[]>(() => {
-    const out: WizIncome[] = [];
-    if (actualIncome.ILS) {
-      out.push({
-        name: "Income (household)",
-        yearlyAmount: actualIncome.ILS,
-        currency: "ILS",
-        memberUserId: members[0]?.userId ?? null,
-      });
-    }
-    if (actualIncome.USD) {
-      out.push({
-        name: "Income (USD)",
-        yearlyAmount: actualIncome.USD,
-        currency: "USD",
-        memberUserId: members[0]?.userId ?? null,
-      });
-    }
-    if (out.length === 0) {
-      out.push({
-        name: "Income",
-        yearlyAmount: 0,
-        currency: "ILS",
-        memberUserId: members[0]?.userId ?? null,
-      });
-    }
-    return out;
-  });
+  // One row per person — each enters their own yearly TAKE-HOME.
+  const [incomes, setIncomes] = useState<WizIncome[]>(() =>
+    members.map((m) => ({
+      name: `Income (${m.name})`,
+      yearlyAmount: 0,
+      currency: "ILS",
+      memberUserId: m.userId,
+    })),
+  );
 
   function patchIncome(i: number, p: Partial<WizIncome>) {
     setIncomes((prev) => prev.map((x, j) => (j === i ? { ...x, ...p } : x)));
@@ -190,7 +171,8 @@ export function SetupWizard({
               Add take-home income
             </h2>
             <p className="mt-1 text-center text-[13px] text-muted">
-              After taxes and deductions. A rough estimate is fine.
+              Yearly take-home per person — after taxes and deductions.
+              A rough estimate is fine.
             </p>
             <div className="mt-4 rounded-md bg-[#eef4fb] p-2.5 text-center text-[12.5px] text-ink-soft">
               Last 12 months, your household take-home was ~{joinMoney(actualIncome)}.

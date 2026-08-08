@@ -6,6 +6,7 @@ import { ChevronRight, EyeOff, Funnel, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonCls, inputCls, selectCls } from "@/components/ui";
 import { CategoryPicker, useDismiss } from "@/components/category-picker";
+import { TxnPeek } from "./txn-peek";
 import { fmtMoney, longDate, shortDate } from "@/lib/format";
 import type { Account, Category, Transaction } from "@/lib/types";
 import {
@@ -79,8 +80,14 @@ function rangeChipLabel(
   return "All time";
 }
 
-type FilterKey = "q" | "account" | "category" | "range";
-type FilterDraft = { q: string; account: string; category: string; from: string; to: string };
+type FilterKey = "q" | "account" | "category" | "flow" | "range";
+type FilterDraft = { q: string; account: string; category: string; flow: string; from: string; to: string };
+
+const FLOW_OPTIONS = [
+  { value: "", label: "All" },
+  { value: "in", label: "Income" },
+  { value: "out", label: "Expenses" },
+] as const;
 
 export function TxnFilters({
   accounts,
@@ -100,6 +107,7 @@ export function TxnFilters({
     q: "",
     account: "",
     category: "",
+    flow: "",
     from: "",
     to: "",
   });
@@ -112,6 +120,7 @@ export function TxnFilters({
       q: current.q ?? "",
       account: current.account ?? "",
       category: current.category ?? "",
+      flow: current.flow ?? "",
       from: current.from ?? "",
       to: current.to ?? "",
     });
@@ -127,6 +136,7 @@ export function TxnFilters({
       q: draft.q.trim() || undefined,
       account: draft.account || undefined,
       category: draft.category || undefined,
+      flow: draft.flow || undefined,
       from: draft.from || undefined,
       to: draft.to || undefined,
     });
@@ -143,6 +153,7 @@ export function TxnFilters({
       q: key === "q" ? undefined : current.q,
       account: key === "account" ? undefined : current.account,
       category: key === "category" ? undefined : current.category,
+      flow: key === "flow" ? undefined : current.flow,
       from: key === "range" ? undefined : current.from,
       to: key === "range" ? undefined : current.to,
     });
@@ -159,6 +170,12 @@ export function TxnFilters({
     chips.push({
       key: "category",
       label: c ? `${c.icon ? `${c.icon} ` : ""}${c.name}` : "Category",
+    });
+  }
+  if (current.flow === "in" || current.flow === "out") {
+    chips.push({
+      key: "flow",
+      label: current.flow === "in" ? "Income" : "Expenses",
     });
   }
   if (current.from || current.to) {
@@ -221,6 +238,23 @@ export function TxnFilters({
                   </option>
                 ))}
               </select>
+              <div className="flex items-center gap-0.5 rounded-lg bg-active p-0.5">
+                {FLOW_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    type="button"
+                    onClick={() => setDraft((d) => ({ ...d, flow: o.value }))}
+                    className={cn(
+                      "flex-1 cursor-pointer rounded-[7px] px-2.5 py-1 text-[12.5px] font-medium transition-colors",
+                      draft.flow === o.value
+                        ? "bg-card text-ink shadow-card"
+                        : "text-muted hover:text-ink",
+                    )}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
               <div className="border-t border-line pt-2.5">
                 <div className="grid grid-cols-[125px_1fr] gap-3">
                   <div className="flex flex-col items-stretch gap-0.5">
@@ -458,6 +492,7 @@ function TxnRow({
   const [nameOverride, setNameOverride] = useState<string | null>(null);
   const merchantRef = useRef<HTMLDivElement>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [peekOpen, setPeekOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [applyAll, setApplyAll] = useState(true);
   const [nameError, setNameError] = useState<string | null>(null);
@@ -466,6 +501,15 @@ function TxnRow({
   const name = nameOverride ?? txn.name;
 
   useDismiss(merchantRef, editorOpen, () => setEditorOpen(false));
+
+  // Shared by the row's picker and the side peek so both stay in sync.
+  function selectCategory(id: string) {
+    setLocalCat(id);
+    startTransition(async () => {
+      await setTransactionCategory(txn.id, id);
+      router.refresh();
+    });
+  }
 
   function openEditor() {
     setDraftName(name);
@@ -498,7 +542,7 @@ function TxnRow({
 
   return (
     <div
-      className={`group grid grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_130px] items-center gap-3 border-t border-line px-4 py-2 hover:bg-hover ${txn.hide_from_reports ? "opacity-45" : ""}`}
+      className={`group grid grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_150px] items-center gap-3 border-t border-line px-4 py-2 hover:bg-hover ${txn.hide_from_reports ? "opacity-45" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-[13px]">
@@ -583,13 +627,7 @@ function TxnRow({
           categories={categories}
           value={localCat}
           disabled={pending}
-          onSelect={(id) => {
-            setLocalCat(id);
-            startTransition(async () => {
-              await setTransactionCategory(txn.id, id);
-              router.refresh();
-            });
-          }}
+          onSelect={selectCategory}
         />
         {localCat ? (
           <button
@@ -626,7 +664,27 @@ function TxnRow({
         >
           {fmtMoney(amount, txn.currency, { sign: amount > 0 })}
         </span>
+        <button
+          type="button"
+          title="Transaction details"
+          onClick={() => setPeekOpen(true)}
+          className="invisible shrink-0 cursor-pointer rounded p-0.5 text-faint hover:text-ink group-hover:visible"
+        >
+          <ChevronRight size={14} />
+        </button>
       </div>
+
+      {peekOpen ? (
+        <TxnPeek
+          txn={txn}
+          categories={categories}
+          accountName={account?.name ?? "—"}
+          merchantName={name}
+          categoryId={localCat}
+          onSelectCategory={selectCategory}
+          onClose={() => setPeekOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
