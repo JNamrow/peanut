@@ -476,6 +476,12 @@ export function TxnTable({
   );
 }
 
+const METHOD_LABELS: Record<NonNullable<Transaction["payment_method"]>, string> = {
+  card: "Credit card",
+  transfer: "Bank transfer",
+  bank: "Bank",
+};
+
 function TxnRow({
   txn,
   account,
@@ -496,6 +502,7 @@ function TxnRow({
   const [editorOpen, setEditorOpen] = useState(false);
   // Category id waiting for a "how far should this apply?" choice.
   const [scopeFor, setScopeFor] = useState<string | null>(null);
+  const [amountOnly, setAmountOnly] = useState(false);
   const [peekOpen, setPeekOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [applyAll, setApplyAll] = useState(true);
@@ -515,6 +522,7 @@ function TxnRow({
       await setTransactionCategory(txn.id, id);
       router.refresh();
     });
+    if (changed) setAmountOnly(false);
     setScopeFor(changed ? id : null);
   }
 
@@ -523,7 +531,7 @@ function TxnRow({
     if (!catId) return;
     setScopeFor(null);
     startTransition(async () => {
-      await applyCategoryScope(txn.id, catId, { future, historical });
+      await applyCategoryScope(txn.id, catId, { future, historical, amountOnly });
       router.refresh();
     });
   }
@@ -559,7 +567,7 @@ function TxnRow({
 
   return (
     <div
-      className={`group grid grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_150px] items-center gap-3 border-t border-line px-4 py-2 hover:bg-hover ${txn.hide_from_reports ? "opacity-45" : ""}`}
+      className={`group grid grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_150px] items-center gap-3 border-t border-line px-4 py-2 hover:bg-hover ${txn.hide_from_reports ? "opacity-45 has-[[data-pop]]:opacity-100" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-[13px]">
@@ -592,7 +600,10 @@ function TxnRow({
           ) : null}
 
           {editorOpen ? (
-            <div className="absolute left-0 top-full z-50 mt-1 w-[270px] rounded-card border border-line bg-card p-3 shadow-pop">
+            <div
+              data-pop
+              className="absolute left-0 top-full z-50 mt-1 w-[270px] rounded-card border border-line bg-card p-3 shadow-pop"
+            >
               <div className="flex flex-col gap-2.5">
                 <input
                   autoFocus
@@ -660,12 +671,22 @@ function TxnRow({
         {scopeFor ? (
           <div
             ref={scopeRef}
+            data-pop
             className="absolute left-0 top-full z-50 mt-1 w-[264px] rounded-card border border-line bg-card p-1.5 shadow-pop"
           >
             <p className="px-2 pb-1 pt-1 text-[12px] text-muted" dir="auto">
               Use “{categories.find((c) => c.id === scopeFor)?.name ?? "this"}”
               for <span className="font-medium text-ink">{name}</span>:
             </p>
+            <label className="flex cursor-pointer items-center gap-1.5 px-2 pb-1.5 text-[12.5px] text-ink-soft">
+              <input
+                type="checkbox"
+                checked={amountOnly}
+                onChange={(e) => setAmountOnly(e.target.checked)}
+                className="accent-accent"
+              />
+              Only when the amount is {fmtMoney(Math.abs(amount), txn.currency)}
+            </label>
             {(
               [
                 ["Only this transaction", null],
@@ -689,9 +710,16 @@ function TxnRow({
         ) : null}
       </div>
 
-      <span className="truncate text-[12.5px] text-muted">
-        {account?.name ?? "—"}
-      </span>
+      <div className="min-w-0">
+        <span className="block truncate text-[12.5px] text-muted">
+          {account?.name ?? "—"}
+        </span>
+        {txn.payment_method ? (
+          <span className="block truncate text-[11px] text-faint">
+            {METHOD_LABELS[txn.payment_method]}
+          </span>
+        ) : null}
+      </div>
 
       <div className="flex items-center justify-end gap-1.5">
         <button

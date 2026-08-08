@@ -148,12 +148,22 @@ export async function syncRiseup(
   );
   const { data: rules } = await admin
     .from("category_rules")
-    .select("match_value, category_id")
+    .select("match_value, match_amount, category_id")
     .eq("space_id", spaceId)
     .eq("match_type", "merchant");
-  const ruleByMerchant = new Map(
-    (rules ?? []).map((r) => [r.match_value as string, r.category_id as string]),
-  );
+  // Amount-scoped rules match merchant+|amount| exactly; plain rules match merchant.
+  const ruleExact = new Map<string, string>();
+  const ruleByMerchant = new Map<string, string>();
+  for (const r of rules ?? []) {
+    if (r.match_amount != null) {
+      ruleExact.set(
+        `${r.match_value}|${Number(r.match_amount)}`,
+        r.category_id as string,
+      );
+    } else {
+      ruleByMerchant.set(r.match_value as string, r.category_id as string);
+    }
+  }
   const accountByHash = new Map(
     (accounts ?? []).map((a) => [a.external_id as string, a.id as string]),
   );
@@ -262,11 +272,18 @@ export async function syncRiseup(
         original_name: t.businessName,
         amount: t.isIncome ? Math.abs(t.amount) : -Math.abs(t.amount),
         currency: "ILS",
+        payment_method:
+          t.sourceType === "creditCard"
+            ? "card"
+            : (t.businessName ?? "").startsWith("העברה")
+              ? "transfer"
+              : "bank",
         raw: t as unknown as Record<string, unknown>,
       };
       // Merchant rules beat the provider label (but never transfer detection).
       const ruleCat = !cardBill
-        ? ruleByMerchant.get(t.businessName ?? "")
+        ? (ruleExact.get(`${t.businessName ?? ""}|${Math.abs(t.amount)}`) ??
+          ruleByMerchant.get(t.businessName ?? ""))
         : undefined;
       if (ruleCat) categoryId = ruleCat;
       // Peanut wins: only write category fields if the user has not

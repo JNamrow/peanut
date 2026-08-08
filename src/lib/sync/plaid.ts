@@ -77,12 +77,12 @@ async function refreshAccounts(
   spaceId: string,
   accessToken: string,
   institutionName: string | null,
-): Promise<Map<string, string>> {
+): Promise<Map<string, { id: string; type: string }>> {
   const admin = createAdminClient();
   const data = await plaidPost<{ accounts: PlaidAccount[] }>("/accounts/get", {
     access_token: accessToken,
   });
-  const map = new Map<string, string>();
+  const map = new Map<string, { id: string; type: string }>();
   const today = new Date().toISOString().slice(0, 10);
   for (const a of data.accounts) {
     const type = mapAccountType(a.type, a.subtype);
@@ -114,7 +114,7 @@ async function refreshAccounts(
       .select("id")
       .single();
     if (error) throw new Error(`Upsert account: ${error.message}`);
-    map.set(a.account_id, row.id as string);
+    map.set(a.account_id, { id: row.id as string, type });
     if (a.balances.current != null) {
       await admin.from("account_balance_snapshots").upsert(
         {
@@ -167,7 +167,7 @@ export async function syncPlaid(connectionId: string): Promise<{
         .eq("source", "plaid"),
       admin
         .from("category_rules")
-        .select("match_value, category_id")
+        .select("match_value, match_amount, category_id")
         .eq("space_id", spaceId)
         .eq("match_type", "merchant"),
       admin
@@ -179,9 +179,19 @@ export async function syncPlaid(connectionId: string): Promise<{
   const aliasMap = new Map(
     (aliases ?? []).map((a) => [a.source_name as string, a.category_id as string]),
   );
-  const ruleByMerchant = new Map(
-    (rules ?? []).map((r) => [r.match_value as string, r.category_id as string]),
-  );
+  // Amount-scoped rules match merchant+|amount| exactly; plain rules match merchant.
+  const ruleExact = new Map<string, string>();
+  const ruleByMerchant = new Map<string, string>();
+  for (const r of rules ?? []) {
+    if (r.match_amount != null) {
+      ruleExact.set(
+        `${r.match_value}|${Number(r.match_amount)}`,
+        r.category_id as string,
+      );
+    } else {
+      ruleByMerchant.set(r.match_value as string, r.category_id as string);
+    }
+  }
   const userCategorized = new Set(
     (userCat ?? []).map((r) => r.external_id as string),
   );
@@ -208,18 +218,21 @@ export async function syncPlaid(connectionId: string): Promise<{
     });
 
     for (const t of [...page.added, ...page.modified]) {
-      const accountId = accountMap.get(t.account_id);
-      if (!accountId) continue;
+      const account = accountMap.get(t.account_id);
+      if (!account) continue;
       const pfc = t.personal_finance_category?.primary ?? null;
       const merchant = t.merchant_name ?? t.name;
       let categoryId = pfc ? (aliasMap.get(pfc) ?? null) : null;
       const isTransfer =
         pfc === "TRANSFER_IN" || pfc === "TRANSFER_OUT" || pfc === "LOAN_PAYMENTS";
-      const ruleCat = !isTransfer ? ruleByMerchant.get(merchant) : undefined;
+      const ruleCat = !isTransfer
+        ? (ruleExact.get(`${merchant}|${Math.abs(t.amount)}`) ??
+          ruleByMerchant.get(merchant))
+        : undefined;
       if (ruleCat) categoryId = ruleCat;
       const row: Record<string, unknown> = {
         space_id: spaceId,
-        account_id: accountId,
+        account_id: account.id,
         connection_id: connectionId,
         source: "plaid",
         external_id: t.transaction_id,
@@ -229,6 +242,11 @@ export async function syncPlaid(connectionId: string): Promise<{
         amount: -t.amount, // Plaid: positive = outflow. Ours: negative = outflow.
         currency: t.iso_currency_code ?? "USD",
         pending: t.pending,
+        payment_method: isTransfer
+          ? "transfer"
+          : account.type === "credit"
+            ? "card"
+            : "bank",
         raw: t as unknown as Record<string, unknown>,
       };
       // Peanut wins: never clobber a user's recategorization on resync.
@@ -281,12 +299,12 @@ export async function syncPlaid(connectionId: string): Promise<{
     }>("/investments/holdings/get", { access_token: String(accessToken) });
     const secById = new Map(inv.securities.map((s) => [s.security_id, s]));
     for (const h of inv.holdings) {
-      const accountId = accountMap.get(h.account_id);
-      if (!accountId) continue;
+      const account = accountMap.get(h.account_id);
+      if (!account) continue;
       const sec = secById.get(h.security_id);
       await admin.from("holdings").upsert(
         {
-          account_id: accountId,
+          account_id: account.id,
           external_id: h.security_id,
           symbol: sec?.ticker_symbol ?? null,
           name: sec?.name ?? null,

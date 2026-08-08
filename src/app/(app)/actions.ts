@@ -513,15 +513,17 @@ export async function createCategory(payload: string): Promise<{
 export async function applyCategoryScope(
   txnId: string,
   categoryId: string,
-  scope: { future: boolean; historical: boolean },
+  scope: { future: boolean; historical: boolean; amountOnly?: boolean },
 ): Promise<{ error: string | null; updated?: number }> {
   const { supabase, space } = await getContext();
   const { data: txn } = await supabase
     .from("transactions")
-    .select("id, name")
+    .select("id, name, amount")
     .eq("id", txnId)
     .maybeSingle();
   if (!txn) return { error: "Transaction not found." };
+
+  const matchAmount = scope.amountOnly ? Math.abs(Number(txn.amount)) : null;
 
   if (scope.future) {
     const { error } = await supabase.from("category_rules").upsert(
@@ -529,21 +531,26 @@ export async function applyCategoryScope(
         space_id: space.id,
         match_type: "merchant",
         match_value: txn.name,
+        match_amount: matchAmount,
         category_id: categoryId,
       },
-      { onConflict: "space_id,match_type,match_value" },
+      // Unique constraint is NULLS NOT DISTINCT over all four columns.
+      { onConflict: "space_id,match_type,match_value,match_amount" },
     );
     if (error) return { error: error.message };
   }
 
   let updated = 0;
   if (scope.historical) {
-    const { data, error } = await supabase
+    let query = supabase
       .from("transactions")
       .update({ category_id: categoryId, categorized_by: "user" })
       .eq("space_id", space.id)
-      .eq("name", txn.name)
-      .select("id");
+      .eq("name", txn.name);
+    if (matchAmount != null) {
+      query = query.in("amount", [matchAmount, -matchAmount]);
+    }
+    const { data, error } = await query.select("id");
     if (error) return { error: error.message };
     updated = data?.length ?? 0;
   }

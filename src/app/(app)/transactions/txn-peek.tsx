@@ -32,6 +32,12 @@ const CATEGORIZED_BY_LABEL: Record<Transaction["categorized_by"], string> = {
   user: "User",
 };
 
+const METHOD_LABELS: Record<NonNullable<Transaction["payment_method"]>, string> = {
+  card: "Credit card",
+  transfer: "Bank transfer",
+  bank: "Bank",
+};
+
 function ActivityRow({
   label,
   value,
@@ -187,7 +193,10 @@ export function TxnPeek({
         onClick={onClose}
         aria-hidden
       />
-      <aside className="fixed inset-y-0 right-0 z-50 w-[400px] max-w-[92vw] overflow-y-auto border-l border-line bg-card shadow-pop">
+      <aside
+        data-pop
+        className="fixed inset-y-0 right-0 z-50 w-[400px] max-w-[92vw] overflow-y-auto border-l border-line bg-card shadow-pop"
+      >
         <div className="border-b border-line px-5 py-4">
           <div className="flex items-start justify-between gap-3">
             <span
@@ -337,6 +346,10 @@ export function TxnPeek({
             <ActivityRow
               label="Categorized by"
               value={CATEGORIZED_BY_LABEL[txn.categorized_by]}
+            />
+            <ActivityRow
+              label="Method"
+              value={txn.payment_method ? METHOD_LABELS[txn.payment_method] : null}
             />
             <ActivityRow label="Currency" value={txn.currency} />
             <ActivityRow label="Billing date" value={rawField("billingDate")} />

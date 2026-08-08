@@ -106,6 +106,7 @@ export interface Transaction {
   tags: string[];
   attachments: string[];
   pending: boolean;
+  payment_method: "card" | "transfer" | "bank" | null;
   is_transfer: boolean;
   hide_from_reports: boolean;
   recurring_stream_id: string | null;

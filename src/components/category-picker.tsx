@@ -288,7 +288,7 @@ export function CategoryPicker({
       </button>
 
       {open ? (
-        <div className="absolute left-0 top-full z-50 mt-1 w-72">
+        <div data-pop className="absolute left-0 top-full z-50 mt-1 w-72">
           <div className="max-h-80 overflow-y-auto rounded-card border border-line bg-card shadow-pop">
             <div className="sticky top-0 z-10 border-b border-line bg-card p-2">
               <div className="relative">
