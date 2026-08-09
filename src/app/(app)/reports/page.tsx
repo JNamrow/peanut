@@ -134,7 +134,10 @@ export default async function ReportsPage({
   }
 
   function bucketBy(list: Transaction[], kind: "income" | "expense") {
-    const buckets = new Map<string, { label: string; labelHe: string | null; icon: string | null; value: number }>();
+    const buckets = new Map<
+      string,
+      { key: string; label: string; labelHe: string | null; icon: string | null; value: number }
+    >();
     for (const t of list) {
       if (kindFor(t) !== kind) continue;
       // Net, not absolute: refunds/incoming reduce an expense bucket
@@ -156,13 +159,26 @@ export default async function ReportsPage({
         labelHe = cat?.name_he ?? null;
         icon = cat?.icon ?? null;
       }
-      const b = buckets.get(key) ?? { label, labelHe, icon, value: 0 };
+      const b = buckets.get(key) ?? { key, label, labelHe, icon, value: 0 };
       b.value += v;
       buckets.set(key, b);
     }
     return [...buckets.values()]
       .filter((b) => b.value > 0)
       .sort((a, b) => b.value - a.value);
+  }
+
+  // A breakdown row links to its transactions, in a new tab, over the same
+  // period. Category rows filter by category; merchant rows by name search.
+  // Group and uncategorized rows have no single filter, so they stay plain.
+  function txnHref(key: string): string | undefined {
+    const q = new URLSearchParams();
+    if (by === "merchant") q.set("q", key);
+    else if (by !== "group" && key !== "un") q.set("category", key);
+    else return undefined;
+    if (from) q.set("from", from);
+    if (to) q.set("to", to);
+    return `/transactions?${q.toString()}`;
   }
 
   const periodLabel =
@@ -438,7 +454,14 @@ export default async function ReportsPage({
                   <p className="py-3 text-center text-[13px] text-muted">Nothing here.</p>
                 ) : (
                   incomeRows.slice(0, 15).map((r, i) => (
-                    <RankRow key={i} row={r} max={maxIncome} currency={ccy} color="bg-pos-soft" />
+                    <RankRow
+                      key={i}
+                      row={r}
+                      max={maxIncome}
+                      currency={ccy}
+                      color="bg-pos-soft"
+                      href={txnHref(r.key)}
+                    />
                   ))
                 )}
               </div>
@@ -457,7 +480,14 @@ export default async function ReportsPage({
                   <p className="py-3 text-center text-[13px] text-muted">Nothing here.</p>
                 ) : (
                   expenseRows.slice(0, 15).map((r, i) => (
-                    <RankRow key={i} row={r} max={maxExpense} currency={ccy} color="bg-neg-soft" />
+                    <RankRow
+                      key={i}
+                      row={r}
+                      max={maxExpense}
+                      currency={ccy}
+                      color="bg-neg-soft"
+                      href={txnHref(r.key)}
+                    />
                   ))
                 )}
               </div>
@@ -526,35 +556,54 @@ export default async function ReportsPage({
                   Nothing in this period.
                 </p>
               ) : (
-                rows.slice(0, 30).map((r, i) => (
-                  <div key={i} className="flex items-center gap-3 py-1">
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ background: DONUT_COLORS[Math.min(i, 8) % DONUT_COLORS.length] }}
-                    />
-                    <span className="w-[45%] truncate text-[13px] font-medium" dir="auto">
-                      {r.icon ? `${r.icon} ` : ""}
-                      {r.label}
-                      {r.labelHe && r.labelHe !== r.label ? (
-                        <span className="ml-1.5 font-normal text-muted">
-                          · {r.labelHe}
-                        </span>
-                      ) : null}
-                    </span>
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-active">
-                      <div
-                        className="h-full rounded-full bg-chart-1"
-                        style={{ width: `${total > 0 ? Math.max(1, (r.value / total) * 100) : 0}%` }}
+                rows.slice(0, 30).map((r, i) => {
+                  const href = txnHref(r.key);
+                  const content = (
+                    <>
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ background: DONUT_COLORS[Math.min(i, 8) % DONUT_COLORS.length] }}
                       />
+                      <span className="w-[45%] truncate text-[13px] font-medium" dir="auto">
+                        {r.icon ? `${r.icon} ` : ""}
+                        {r.label}
+                        {r.labelHe && r.labelHe !== r.label ? (
+                          <span className="ml-1.5 font-normal text-muted">
+                            · {r.labelHe}
+                          </span>
+                        ) : null}
+                      </span>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-active">
+                        <div
+                          className="h-full rounded-full bg-chart-1"
+                          style={{ width: `${total > 0 ? Math.max(1, (r.value / total) * 100) : 0}%` }}
+                        />
+                      </div>
+                      <span className="tnum w-24 text-right text-[13px]">
+                        {fmtMoney(r.value, ccy, { decimals: false })}
+                      </span>
+                      <span className="tnum w-10 text-right text-[12px] text-muted">
+                        {total > 0 ? Math.round((r.value / total) * 100) : 0}%
+                      </span>
+                    </>
+                  );
+                  return href ? (
+                    <a
+                      key={i}
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open these transactions"
+                      className="-mx-1 flex items-center gap-3 rounded-md px-1 py-1 hover:bg-hover"
+                    >
+                      {content}
+                    </a>
+                  ) : (
+                    <div key={i} className="flex items-center gap-3 py-1">
+                      {content}
                     </div>
-                    <span className="tnum w-24 text-right text-[13px]">
-                      {fmtMoney(r.value, ccy, { decimals: false })}
-                    </span>
-                    <span className="tnum w-10 text-right text-[12px] text-muted">
-                      {total > 0 ? Math.round((r.value / total) * 100) : 0}%
-                    </span>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </Card>
@@ -599,14 +648,16 @@ function RankRow({
   max,
   currency,
   color,
+  href,
 }: {
   row: { label: string; labelHe?: string | null; icon: string | null; value: number };
   max: number;
   currency: string;
   color: string;
+  href?: string;
 }) {
-  return (
-    <div className="relative overflow-hidden rounded-md">
+  const inner = (
+    <>
       <div
         className={`absolute inset-y-0 left-0 ${color}`}
         style={{ width: `${Math.max(2, (row.value / max) * 100)}%` }}
@@ -623,6 +674,20 @@ function RankRow({
           {fmtMoney(row.value, currency, { decimals: false })}
         </span>
       </div>
-    </div>
+    </>
+  );
+  if (!href) {
+    return <div className="relative overflow-hidden rounded-md">{inner}</div>;
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Open these transactions"
+      className="relative block overflow-hidden rounded-md ring-inset hover:ring-1 hover:ring-line-strong"
+    >
+      {inner}
+    </a>
   );
 }
