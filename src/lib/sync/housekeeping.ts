@@ -234,6 +234,7 @@ export async function detectRecurring(spaceId: string): Promise<number> {
       typical_amount: Math.round(avgAmt * 100) / 100,
       currency: last.currency,
       next_expected_date: next.toISOString().slice(0, 10),
+      start_date: list[0].date,
       kind: Number(last.amount) > 0 ? "income" : "expense",
       status: "suggested",
     });

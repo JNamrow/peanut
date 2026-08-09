@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { syncRiseup, markRiseupError } from "@/lib/sync/riseup";
 import { syncPlaid } from "@/lib/sync/plaid";
 import { detectRecurring, writeDailySnapshots } from "@/lib/sync/housekeeping";
+import { CADENCE_LABELS, occurrencesInMonth, type Cadence } from "@/lib/recurring";
 import type { AccountType } from "@/lib/types";
 
 function today(): string {
@@ -432,6 +433,175 @@ export async function setRecurringStatus(
   const { supabase } = await getContext();
   await supabase.from("recurring_streams").update({ status }).eq("id", streamId);
   revalidatePath("/recurring");
+}
+
+/** First expected date on/after `from`, walking up to 24 months ahead. */
+function firstOccurrenceOnOrAfter(
+  cadence: Cadence,
+  anchor: string,
+  from: string,
+): string | null {
+  const [fy, fm] = from.split("-").map(Number);
+  for (let i = 0; i < 24; i++) {
+    const total = fy * 12 + (fm - 1) + i;
+    const month = `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, "0")}`;
+    const hit = occurrencesInMonth(cadence, anchor, month).find((d) => d >= from);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export async function upsertRecurringStream(
+  payload: string,
+): Promise<{ error: string | null; id?: string }> {
+  const { supabase, space } = await getContext();
+  let data: {
+    id?: string | null;
+    merchantName: string;
+    cadence: Cadence;
+    kind: "expense" | "income";
+    amount: number;
+    currency: string;
+    startDate: string;
+    status?: "active" | "ended";
+    accountId?: string | null;
+  };
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return { error: "Bad recurring data." };
+  }
+  const merchantName = data.merchantName?.trim();
+  if (!merchantName) return { error: "Merchant name is required." };
+  if (!CADENCE_LABELS[data.cadence]) return { error: "Pick a frequency." };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data.startDate ?? "")) {
+    return { error: "Start date is required." };
+  }
+  const amount = Math.abs(Number(data.amount));
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be above zero." };
+
+  const row = {
+    merchant_name: merchantName,
+    cadence: data.cadence,
+    kind: data.kind === "income" ? "income" : "expense",
+    typical_amount: amount,
+    currency: data.currency,
+    start_date: data.startDate,
+    status: data.status === "ended" ? "ended" : "active",
+    account_id: data.accountId ?? null,
+    next_expected_date: firstOccurrenceOnOrAfter(data.cadence, data.startDate, today()),
+  };
+
+  let id: string;
+  if (data.id) {
+    const { data: existing } = await supabase
+      .from("recurring_streams")
+      .select("id")
+      .eq("id", data.id)
+      .eq("space_id", space.id)
+      .maybeSingle();
+    if (!existing) return { error: "Recurring item not found." };
+    const { error } = await supabase
+      .from("recurring_streams")
+      .update(row)
+      .eq("id", data.id);
+    if (error) return { error: error.message };
+    id = data.id;
+  } else {
+    const { data: inserted, error } = await supabase
+      .from("recurring_streams")
+      .insert({ space_id: space.id, ...row })
+      .select("id")
+      .single();
+    if (error) return { error: error.message };
+    id = inserted.id as string;
+  }
+
+  // Claim this merchant's untagged transactions for the stream.
+  await supabase
+    .from("transactions")
+    .update({ recurring_stream_id: id })
+    .eq("space_id", space.id)
+    .eq("name", merchantName)
+    .is("recurring_stream_id", null);
+
+  revalidatePath("/recurring");
+  revalidatePath("/transactions");
+  return { error: null, id };
+}
+
+export async function searchRecurringMerchants(q: string): Promise<{
+  error: string | null;
+  results: {
+    name: string;
+    count: number;
+    lastDate: string;
+    typicalAmount: number;
+    currency: string;
+    streamId: string | null;
+  }[];
+}> {
+  const { supabase, space } = await getContext();
+  const query = q.trim();
+  if (query.length < 2) return { error: null, results: [] };
+
+  const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  const { data: txns, error } = await supabase
+    .from("transactions")
+    .select("name, date, amount, currency")
+    .eq("space_id", space.id)
+    .ilike("name", pattern)
+    .order("date", { ascending: false })
+    .limit(1000);
+  if (error) return { error: error.message, results: [] };
+
+  const groups = new Map<
+    string,
+    { count: number; lastDate: string; typicalAmount: number; currencies: Map<string, number> }
+  >();
+  for (const t of txns ?? []) {
+    const name = (t.name as string).trim();
+    if (!name) continue;
+    // Rows arrive newest first, so the first row per name sets lastDate + amount.
+    const g = groups.get(name) ?? {
+      count: 0,
+      lastDate: t.date as string,
+      typicalAmount: Math.abs(Number(t.amount)),
+      currencies: new Map<string, number>(),
+    };
+    g.count++;
+    g.currencies.set(t.currency as string, (g.currencies.get(t.currency as string) ?? 0) + 1);
+    groups.set(name, g);
+  }
+
+  const top = [...groups.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 20);
+
+  const streamByName = new Map<string, string>();
+  if (top.length) {
+    const { data: streams } = await supabase
+      .from("recurring_streams")
+      .select("id, merchant_name")
+      .eq("space_id", space.id)
+      .neq("status", "dismissed")
+      .in("merchant_name", top.map(([name]) => name));
+    for (const s of streams ?? []) {
+      if (!streamByName.has(s.merchant_name as string)) {
+        streamByName.set(s.merchant_name as string, s.id as string);
+      }
+    }
+  }
+
+  return {
+    error: null,
+    results: top.map(([name, g]) => ({
+      name,
+      count: g.count,
+      lastDate: g.lastDate,
+      typicalAmount: g.typicalAmount,
+      currency: [...g.currencies.entries()].sort((a, b) => b[1] - a[1])[0][0],
+      streamId: streamByName.get(name) ?? null,
+    })),
+  };
 }
 
 // ------------------------------------------------------------------ budget

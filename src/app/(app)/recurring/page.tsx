@@ -1,162 +1,92 @@
-import { getAccounts, getContext } from "@/lib/data";
-import { fmtMoney, shortDate } from "@/lib/format";
-import { DualMoney } from "@/components/dual-money";
-import { Card, CardHeader, EmptyState, PageHeader } from "@/components/ui";
-import { DetectButton, StreamActions } from "./recurring-ui";
-import type { RecurringStream } from "@/lib/types";
-import { CalendarClock } from "lucide-react";
+import { getAccounts, getCategories, getContext } from "@/lib/data";
+import { addMonths, monthStart } from "@/lib/format";
+import { buildRecurringMonth, type Cadence } from "@/lib/recurring";
+import type { RecurringStream, Transaction } from "@/lib/types";
+import { RecurringUI, type CardCycle, type StreamLite } from "./recurring-ui";
 
-const CADENCE_LABEL: Record<string, string> = {
-  weekly: "Every week",
-  biweekly: "Every 2 weeks",
-  monthly: "Every month",
-  quarterly: "Every 3 months",
-  semiyearly: "Every 6 months",
-  yearly: "Every year",
+type StreamRow = RecurringStream & {
+  start_date?: string | null;
+  typical_amount: number | null;
 };
 
-export default async function RecurringPage() {
-  const { supabase, space } = await getContext();
-  const accounts = await getAccounts();
-  const { data: streams } = await supabase
-    .from("recurring_streams")
-    .select("*")
-    .eq("space_id", space.id)
-    .neq("status", "dismissed")
-    .order("next_expected_date");
-
-  const list = (streams ?? []) as RecurringStream[];
-  const suggested = list.filter((s) => s.status === "suggested");
-  const active = list.filter((s) => s.status === "active");
-  const accountById = new Map(accounts.map((a) => [a.id, a.name]));
-
-  const monthlyByCcy = new Map<string, number>();
-  for (const r of active) {
-    if (r.kind !== "expense") continue;
-    const factor =
-      r.cadence === "weekly"
-        ? 4.33
-        : r.cadence === "biweekly"
-          ? 2.17
-          : r.cadence === "monthly"
-            ? 1
-            : r.cadence === "quarterly"
-              ? 1 / 3
-              : r.cadence === "semiyearly"
-                ? 1 / 6
-                : 1 / 12;
-    monthlyByCcy.set(
-      r.currency,
-      (monthlyByCcy.get(r.currency) ?? 0) + Number(r.typical_amount ?? 0) * factor,
-    );
-  }
-  const monthlyTotals = ["ILS", "USD", ...[...monthlyByCcy.keys()].filter((c) => c !== "ILS" && c !== "USD")]
-    .filter((c) => monthlyByCcy.has(c))
-    .map((c) => ({ currency: c, value: monthlyByCcy.get(c)! }));
-
-  return (
-    <>
-      <PageHeader title="Recurring" right={<DetectButton />} />
-      <div className="flex flex-col gap-4 px-6 pt-2">
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-          <Card className="px-5 py-4">
-            <DualMoney size="lg" values={monthlyTotals.length ? monthlyTotals : [{ currency: "ILS", value: 0 }]} />
-            <div className="text-[11px] font-semibold tracking-wider text-muted">
-              MONTHLY RECURRING EXPENSES
-            </div>
-          </Card>
-          <Card className="px-5 py-4">
-            <div className="tnum text-[20px] font-semibold">{active.length}</div>
-            <div className="text-[11px] font-semibold tracking-wider text-muted">
-              ACTIVE ITEMS
-            </div>
-          </Card>
-          <Card className="px-5 py-4">
-            <div className="tnum text-[20px] font-semibold">{suggested.length}</div>
-            <div className="text-[11px] font-semibold tracking-wider text-muted">
-              WAITING FOR REVIEW
-            </div>
-          </Card>
-        </div>
-
-        {suggested.length > 0 ? (
-          <Card>
-            <CardHeader title="Review suggestions" sub="found in your transactions" />
-            <div className="px-2 pb-2">
-              {suggested.map((r) => (
-                <StreamRow
-                  key={r.id}
-                  stream={r}
-                  accountName={r.account_id ? accountById.get(r.account_id) : undefined}
-                  showActions
-                />
-              ))}
-            </div>
-          </Card>
-        ) : null}
-
-        <Card>
-          <CardHeader title="All recurring" sub="active" />
-          <div className="px-2 pb-2">
-            {active.length === 0 ? (
-              <EmptyState
-                icon={<CalendarClock size={19} />}
-                title="No recurring items yet"
-                sub="Press Find recurring — Peanut scans 13 months of transactions for repeat bills and paychecks."
-                action={<DetectButton primary />}
-              />
-            ) : (
-              active.map((r) => (
-                <StreamRow
-                  key={r.id}
-                  stream={r}
-                  accountName={r.account_id ? accountById.get(r.account_id) : undefined}
-                />
-              ))
-            )}
-          </div>
-        </Card>
-      </div>
-    </>
-  );
+function toLite(s: StreamRow): StreamLite {
+  return {
+    id: s.id,
+    merchantName: s.merchant_name,
+    cadence: s.cadence as Cadence,
+    typicalAmount: Number(s.typical_amount ?? 0),
+    currency: s.currency,
+    nextExpectedDate: s.next_expected_date,
+    kind: s.kind,
+    status: s.status as StreamLite["status"],
+    accountId: s.account_id,
+    startDate: s.start_date ?? null,
+  };
 }
 
-function StreamRow({
-  stream,
-  accountName,
-  showActions = false,
+export default async function RecurringPage({
+  searchParams,
 }: {
-  stream: RecurringStream;
-  accountName?: string;
-  showActions?: boolean;
+  searchParams: Promise<{ month?: string; tab?: string }>;
 }) {
+  const params = await searchParams;
+  const month = /^\d{4}-\d{2}$/.test(params.month ?? "")
+    ? params.month!
+    : monthStart().slice(0, 7);
+  const tab = params.tab === "all" ? ("all" as const) : ("monthly" as const);
+
+  const { supabase, space } = await getContext();
+  const [accounts, categories] = await Promise.all([getAccounts(), getCategories()]);
+
+  const first = `${month}-01`;
+  const next = addMonths(first, 1);
+  const [{ data: streamRows }, { data: txnRows }] = await Promise.all([
+    supabase
+      .from("recurring_streams")
+      .select("*")
+      .eq("space_id", space.id)
+      .order("merchant_name"),
+    supabase
+      .from("transactions")
+      .select("*")
+      .eq("space_id", space.id)
+      .gte("date", first)
+      .lt("date", next),
+  ]);
+
+  const all = (streamRows ?? []) as StreamRow[];
+  const suggestions = all.filter((s) => s.status === "suggested");
+  const streams = all.filter((s) => s.status === "active" || s.status === "ended");
+
+  const now = new Date();
+  const todayYmd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+  const data = buildRecurringMonth(
+    streams,
+    (txnRows ?? []) as Transaction[],
+    month,
+    todayYmd,
+  );
+
+  const cards: CardCycle[] = accounts
+    .filter((a) => a.type === "credit" && !a.hidden && a.current_balance != null)
+    .map((a) => ({
+      id: a.id,
+      name: a.name,
+      cycle: Math.abs(Math.min(Number(a.current_balance), 0)),
+      currency: a.currency,
+    }));
+
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 hover:bg-hover">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-active text-[13px] font-semibold text-ink-soft">
-          {stream.merchant_name.slice(0, 1).toUpperCase()}
-        </span>
-        <div className="min-w-0">
-          <div className="truncate text-[13.5px] font-medium" dir="auto">
-            {stream.merchant_name}
-          </div>
-          <div className="text-[12px] text-muted">
-            {CADENCE_LABEL[stream.cadence] ?? stream.cadence}
-            {accountName ? ` · ${accountName}` : ""}
-            {stream.next_expected_date
-              ? ` · next ${shortDate(stream.next_expected_date)}`
-              : ""}
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <span
-          className={`tnum text-[13.5px] font-medium ${stream.kind === "income" ? "text-pos" : ""}`}
-        >
-          {fmtMoney(Number(stream.typical_amount ?? 0), stream.currency)}
-        </span>
-        {showActions ? <StreamActions streamId={stream.id} /> : null}
-      </div>
-    </div>
+    <RecurringUI
+      month={month}
+      tab={tab}
+      data={data}
+      streams={streams.map(toLite)}
+      suggestions={suggestions.map(toLite)}
+      cards={cards}
+      accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
+      categories={categories}
+    />
   );
 }

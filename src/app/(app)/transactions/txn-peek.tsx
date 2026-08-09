@@ -9,6 +9,10 @@ import { CategoryPicker } from "@/components/category-picker";
 import { fmtMoney, longDate } from "@/lib/format";
 import type { Category, Transaction } from "@/lib/types";
 import {
+  RecurringModal,
+  type RecurringDraft,
+} from "../recurring/recurring-modal";
+import {
   receiptUrl,
   removeReceipt,
   toggleTransactionHidden,
@@ -91,16 +95,18 @@ export function TxnPeek({
   const [hidden, setHidden] = useState(txn.hide_from_reports);
   const [, startMisc] = useTransition();
 
+  const [recurOpen, setRecurOpen] = useState(false);
+
   // Track external changes (e.g. the row's eye toggle) after a refresh.
   useEffect(() => setHidden(txn.hide_from_reports), [txn.hide_from_reports]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !recurOpen) onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, recurOpen]);
 
   useEffect(
     () => () => {
@@ -340,6 +346,32 @@ export function TxnPeek({
           </button>
         </section>
 
+        <section className="border-b border-line px-5 py-4">
+          <div className={sectionHeaderCls}>Recurring</div>
+          {txn.recurring_stream_id ? (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[13px] text-muted">
+                Part of a recurring series
+              </span>
+              <button
+                type="button"
+                className={buttonCls("secondary", "sm")}
+                onClick={() => setRecurOpen(true)}
+              >
+                Edit recurring
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className={buttonCls("secondary", "sm")}
+              onClick={() => setRecurOpen(true)}
+            >
+              Mark as recurring
+            </button>
+          )}
+        </section>
+
         <section className="px-5 py-4">
           <div className={sectionHeaderCls}>Activity</div>
           <div className="flex flex-col gap-1.5 text-[12px] text-muted">
@@ -375,6 +407,28 @@ export function TxnPeek({
           </div>
         </section>
       </aside>
+      {recurOpen ? (
+        <RecurringModal
+          initial={recurringDraft(txn, merchantName, amount)}
+          onClose={() => setRecurOpen(false)}
+        />
+      ) : null}
     </>
   );
+}
+
+function recurringDraft(
+  txn: Transaction,
+  merchantName: string,
+  amount: number,
+): RecurringDraft {
+  return {
+    streamId: txn.recurring_stream_id,
+    merchantName,
+    amount: Math.abs(amount),
+    currency: txn.currency,
+    kind: amount > 0 ? "income" : "expense",
+    startDate: txn.date,
+    cadence: "monthly",
+  };
 }

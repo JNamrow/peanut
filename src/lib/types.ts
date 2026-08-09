@@ -131,23 +131,32 @@ export interface Budget {
   rollover: boolean;
 }
 
+// Inlined here (lib/recurring re-exports it) to avoid a circular import.
+export type Cadence =
+  | "weekly"
+  | "biweekly"
+  | "every_4_weeks"
+  | "twice_monthly_1_15"
+  | "twice_monthly_15_eom"
+  | "monthly"
+  | "every_2_months"
+  | "quarterly"
+  | "semiyearly"
+  | "yearly";
+
 export interface RecurringStream {
   id: string;
   space_id: string;
   merchant_name: string;
   account_id: string | null;
-  cadence:
-    | "weekly"
-    | "biweekly"
-    | "monthly"
-    | "quarterly"
-    | "semiyearly"
-    | "yearly";
+  cadence: Cadence;
   typical_amount: number | null;
   currency: Currency;
   next_expected_date: string | null;
   kind: "expense" | "income";
   status: "suggested" | "active" | "dismissed" | "ended";
+  start_date: string | null;
+  created_at?: string;
 }
 
 export interface Holding {
