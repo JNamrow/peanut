@@ -598,6 +598,11 @@ function TxnRow({
           {txn.pending ? (
             <span className="text-[11px] font-medium text-accent">Pending</span>
           ) : null}
+          {txn.notes ? (
+            <div className="truncate text-[11px] text-muted" dir="auto">
+              {txn.notes}
+            </div>
+          ) : null}
 
           {editorOpen ? (
             <div

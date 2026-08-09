@@ -238,15 +238,21 @@ export function TxnPeek({
         </section>
 
         <section className="border-b border-line px-5 py-4">
-          <div className={sectionHeaderCls}>Notes</div>
+          <div className={sectionHeaderCls}>Description</div>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            rows={3}
-            placeholder="Add a note"
+            rows={2}
+            placeholder="Add the recipient, sender, or a reason"
             dir="auto"
             className="w-full resize-y rounded-lg border border-line-strong bg-card px-3 py-2 text-[13.5px] outline-none placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/15"
           />
+          {txn.is_transfer || txn.payment_method === "transfer" ? (
+            <p className="mt-1 text-[11.5px] text-faint">
+              The bank doesn&rsquo;t send the other side of a transfer — note who
+              and why here.
+            </p>
+          ) : null}
           <div className="mt-1.5 flex items-center justify-end gap-2">
             {notesSaved ? (
               <span className="text-[12px] font-medium text-pos">Saved</span>
