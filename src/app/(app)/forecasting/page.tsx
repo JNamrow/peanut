@@ -158,15 +158,19 @@ export default async function ForecastingPage() {
     birthYear: yearOf((m as { birthday?: string | null }).birthday ?? null),
     retirementYear:
       (m as { retirement_year?: number | null }).retirement_year ?? null,
+    lifeExpectancy:
+      (m as { life_expectancy?: number | null }).life_expectancy ?? 90,
   }));
 
   const fIncomes: ForecastIncome[] = (incomeRows ?? []).map((r) => ({
     id: r.id,
     name: r.name,
+    icon: null,
     memberUserId: r.member_user_id,
     yearlyAmount: Number(r.yearly_amount),
     currency: r.currency,
     stopsAtRetirement: r.stops_at_retirement,
+    excluded: !!r.excluded,
   }));
 
   const fEvents: ForecastEvent[] = (eventRows ?? []).map((r) => ({
@@ -182,10 +186,9 @@ export default async function ForecastingPage() {
   }));
 
   const now = new Date().getFullYear();
-  const oldestBirth = Math.min(
-    ...fMembers.map((m) => m.birthYear ?? now - 30),
+  const endYear = Math.max(
+    ...fMembers.map((m) => (m.birthYear ?? now - 30) + m.lifeExpectancy),
   );
-  const endYear = oldestBirth + 90;
 
   const futureValues: "today" | "nominal" =
     settings.future_values === "nominal" ? "nominal" : "today";

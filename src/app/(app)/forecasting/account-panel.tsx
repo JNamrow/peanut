@@ -3,21 +3,25 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Line, LineChart, ResponsiveContainer, XAxis, YAxis } from "recharts";
-import { ChevronLeft, GripVertical, X } from "lucide-react";
+import { ChevronLeft, GripVertical, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtMoney } from "@/lib/format";
 import { buttonCls, Card, inputCls, selectCls } from "@/components/ui";
+import type { ForecastEvent } from "@/lib/forecast";
 import {
+  deleteForecastEvent,
   saveSplits,
   saveWithdrawalOrder,
   updateForecastAccount,
+  updateForecastEvent,
 } from "./forecast-actions";
 import type { AccountSetting, ForecastConfig } from "./forecast-ui";
 
 export type PanelTarget =
   | { kind: "account"; id: string }
   | { kind: "extra" }
-  | { kind: "withdrawal" };
+  | { kind: "withdrawal" }
+  | { kind: "event"; id: string };
 
 const EXTRA_OPTION = "__extra__";
 const LIABILITY_TYPES = new Set(["credit", "loan", "other_liability"]);
@@ -28,20 +32,28 @@ const sym = (currency: string) => (currency === "ILS" ? "₪" : "$");
 export function AccountPanel({
   kind,
   account,
+  eventId,
+  events,
+  birthYear,
   lastAccountId,
   accounts,
   config,
   onSwitch,
   onClose,
 }: {
-  kind: "account" | "extra" | "withdrawal";
+  kind: "account" | "extra" | "withdrawal" | "event";
   account: AccountSetting | null;
+  eventId?: string | null;
+  events: ForecastEvent[];
+  birthYear?: number | null;
   lastAccountId: string | null;
   accounts: AccountSetting[];
   config: ForecastConfig;
   onSwitch: (next: PanelTarget) => void;
   onClose: () => void;
 }) {
+  const event =
+    kind === "event" ? (events.find((e) => e.id === eventId) ?? null) : null;
   return (
     <Card className="h-fit">
       {kind === "account" && account ? (
@@ -50,6 +62,13 @@ export function AccountPanel({
           account={account}
           accounts={accounts}
           onSwitch={onSwitch}
+          onClose={onClose}
+        />
+      ) : kind === "event" && event ? (
+        <EventView
+          key={event.id}
+          event={event}
+          birthYear={birthYear ?? null}
           onClose={onClose}
         />
       ) : kind === "extra" ? (
@@ -445,6 +464,206 @@ function AccountView({
         </Section>
 
         {error ? <p className="text-neg">{error}</p> : null}
+      </div>
+    </>
+  );
+}
+
+/* -------------------------------- Event -------------------------------- */
+
+interface EventForm {
+  name: string;
+  icon: string;
+  year: number;
+  endYear: string;
+  amount: number;
+  currency: string;
+  kind: "one_time" | "yearly";
+  affects: "income" | "expense";
+}
+
+function EventView({
+  event,
+  birthYear,
+  onClose,
+}: {
+  event: ForecastEvent;
+  birthYear: number | null;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const { saved, flash } = useSavedFlash();
+  const [form, setForm] = useState<EventForm>({
+    name: event.name,
+    icon: event.icon ?? "",
+    year: event.year,
+    endYear: event.endYear != null ? String(event.endYear) : "",
+    amount: event.amount,
+    currency: event.currency,
+    kind: event.kind,
+    affects: event.affects,
+  });
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    },
+    [],
+  );
+
+  function persist(next: EventForm) {
+    setError(null);
+    startTransition(async () => {
+      const result = await updateForecastEvent(
+        event.id,
+        JSON.stringify({
+          name: next.name.trim() || "Event",
+          icon: next.icon.trim() || null,
+          kind: next.kind,
+          affects: next.affects,
+          year: Number(next.year) || event.year,
+          endYear:
+            next.kind === "yearly" && next.endYear ? Number(next.endYear) : null,
+          amount: Number(next.amount) || 0,
+          currency: next.currency === "USD" ? "USD" : "ILS",
+        }),
+      );
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      flash();
+      router.refresh();
+    });
+  }
+
+  function update(patch: Partial<EventForm>, delay = 0) {
+    const next = { ...form, ...patch };
+    setForm(next);
+    if (debounce.current) clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => persist(next), delay);
+  }
+
+  function del() {
+    setError(null);
+    startTransition(async () => {
+      const result = await deleteForecastEvent(event.id);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      router.refresh();
+      onClose();
+    });
+  }
+
+  const ageAt = (year: number) => (birthYear != null ? year - birthYear : null);
+  const yearAge = ageAt(Number(form.year));
+  const endAge = form.endYear ? ageAt(Number(form.endYear)) : null;
+
+  return (
+    <>
+      <PanelHeader
+        title={`${form.icon || "🎯"} ${form.name || "Event"}`}
+        saved={saved}
+        onClose={onClose}
+      />
+      <div className="flex flex-col gap-3 px-4 pb-4 pt-2 text-[13px]">
+        <Section title="Event">
+          <div className="flex items-center gap-2">
+            <input
+              value={form.icon}
+              title="Icon"
+              onChange={(e) => update({ icon: e.target.value }, 500)}
+              className={cn(inputCls, "h-8 w-[52px] shrink-0 px-0 text-center")}
+            />
+            <input
+              value={form.name}
+              placeholder="Name"
+              onChange={(e) => update({ name: e.target.value }, 500)}
+              className={cn(inputCls, "h-8 min-w-0 flex-1")}
+            />
+          </div>
+        </Section>
+
+        <Section title="When">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={form.year}
+              onChange={(e) => update({ year: Number(e.target.value) }, 500)}
+              className={cn(inputCls, "h-8 w-[90px] px-2")}
+            />
+            {yearAge != null ? (
+              <span className="text-[12px] text-muted">(age {yearAge})</span>
+            ) : null}
+          </div>
+          <select
+            value={form.kind}
+            onChange={(e) => update({ kind: e.target.value as "one_time" | "yearly" })}
+            className={cn(selectCls, "mt-2 h-8 w-full")}
+          >
+            <option value="one_time">One time</option>
+            <option value="yearly">Yearly</option>
+          </select>
+          {form.kind === "yearly" ? (
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="number"
+                value={form.endYear}
+                placeholder="End year"
+                onChange={(e) => update({ endYear: e.target.value }, 500)}
+                className={cn(inputCls, "h-8 w-[90px] px-2")}
+              />
+              <span className="text-[12px] text-muted">
+                {form.endYear
+                  ? endAge != null
+                    ? `(age ${endAge})`
+                    : ""
+                  : "empty = forever"}
+              </span>
+            </div>
+          ) : null}
+        </Section>
+
+        <Section title="Amount">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={form.amount || ""}
+              onChange={(e) => update({ amount: Number(e.target.value) || 0 }, 500)}
+              className={cn(inputCls, "h-8 min-w-0 flex-1")}
+            />
+            <select
+              value={form.currency}
+              onChange={(e) => update({ currency: e.target.value })}
+              className={cn(selectCls, "h-8 w-[64px] shrink-0")}
+            >
+              <option value="ILS">₪</option>
+              <option value="USD">$</option>
+            </select>
+          </div>
+          <select
+            value={form.affects}
+            onChange={(e) => update({ affects: e.target.value as "income" | "expense" })}
+            className={cn(selectCls, "mt-2 h-8 w-full")}
+          >
+            <option value="income">Adds income</option>
+            <option value="expense">Adds expense</option>
+          </select>
+        </Section>
+
+        {error ? <p className="text-neg">{error}</p> : null}
+        <button
+          type="button"
+          disabled={pending}
+          onClick={del}
+          className={cn(buttonCls("secondary"), "text-neg")}
+        >
+          <Trash2 size={13.5} /> Delete event
+        </button>
       </div>
     </>
   );

@@ -13,6 +13,7 @@ export interface SpaceMember {
   display_name: string | null;
   birthday: string | null;
   retirement_year: number | null;
+  life_expectancy: number;
 }
 
 export type AccountType =

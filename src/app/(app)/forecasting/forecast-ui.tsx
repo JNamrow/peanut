@@ -6,6 +6,8 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceArea,
+  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -18,7 +20,6 @@ import {
   Pencil,
   Plus,
   Settings,
-  Trash2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -31,12 +32,9 @@ import {
   type ForecastIncome,
   type ForecastMember,
   type ForecastResult,
+  type ForecastSeriesRow,
 } from "@/lib/forecast";
-import {
-  addForecastEvent,
-  deleteForecastEvent,
-  updateAssumptions,
-} from "./forecast-actions";
+import { addForecastEvent, updateAssumptions } from "./forecast-actions";
 import { AccountPanel, type PanelTarget } from "./account-panel";
 
 const ILS_COLOR = "#1a9a5c";
@@ -107,6 +105,8 @@ export function ForecastView({
     const s = new Set<string>();
     for (const ccy of currencies) {
       s.add(`${ccy}:assets`);
+      s.add(`${ccy}:cf:income`);
+      s.add(`${ccy}:cf:expenses`);
       for (const row of result.accountRows[ccy] ?? []) s.add(`${ccy}:g:${row.group}`);
     }
     return s;
@@ -167,6 +167,51 @@ export function ForecastView({
 
   const yearCols = useMemo(() => chartData.map((d) => d.year), [chartData]);
 
+  // Youngest member (latest birth year) drives the "Age N" labels.
+  const youngestBirthYear = useMemo(() => {
+    const ys = members
+      .map((m) => m.birthYear)
+      .filter((y): y is number => y != null);
+    return ys.length ? Math.max(...ys) : null;
+  }, [members]);
+
+  const primaryCcy = currencies.includes("ILS") ? "ILS" : "USD";
+  const primaryAxisId = primaryCcy === "ILS" ? "ils" : "usd";
+
+  // Monarch-style start label: "2026 · Age 30 · ₪219.1K".
+  const startDot = useMemo(() => {
+    const d = chartData[0];
+    if (!d) return null;
+    const value = primaryCcy === "ILS" ? d.ils : d.usd;
+    if (value == null) return null;
+    const age = youngestBirthYear != null ? d.year - youngestBirthYear : null;
+    return {
+      year: d.year,
+      value,
+      label: `${d.year}${age != null ? ` · Age ${age}` : ""} · ${fmtMoney(value, primaryCcy, { compact: true })}`,
+    };
+  }, [chartData, primaryCcy, youngestBirthYear]);
+
+  // The event open in the side panel shades its active years on the chart.
+  const shadedEvent =
+    panel?.kind === "event" ? (events.find((e) => e.id === panel.id) ?? null) : null;
+  const shadeRange = useMemo(() => {
+    if (!shadedEvent || yearCols.length < 2) return null;
+    const first = yearCols[0];
+    const last = yearCols[yearCols.length - 1];
+    let x1 = Math.min(Math.max(shadedEvent.year, first), last);
+    let x2 =
+      shadedEvent.kind === "one_time"
+        ? x1
+        : Math.min(Math.max(shadedEvent.endYear ?? last, x1), last);
+    // A point-scale axis renders x1===x2 as zero width; widen to one year band.
+    if (x1 === x2) {
+      if (x2 < last) x2 += 1;
+      else x1 -= 1;
+    }
+    return { x1, x2 };
+  }, [shadedEvent, yearCols]);
+
   return (
     <>
       <PageHeader
@@ -209,19 +254,26 @@ export function ForecastView({
                   <StatCell
                     key={`${ccy}-eoy`}
                     label={`${ccy === "ILS" ? "₪" : "$"} Net worth (EOY)`}
+                    tooltip="The total value of the assets and debts included in your forecast at the end of the year."
                     value={fmtMoney(s.eoy, ccy, { compact: true })}
                   />
                 );
               })}
               {currencies.map((ccy) => {
                 const s = statFor(ccy);
+                const atRetirement = !!result.retirementYear && s.atRetire != null;
                 return (
                   <StatCell
                     key={`${ccy}-end`}
                     label={`${ccy === "ILS" ? "₪" : "$"} at ${result.retirementYear ? "retirement" : "end"}`}
+                    tooltip={
+                      atRetirement
+                        ? "Projected net worth in the year the first member retires."
+                        : "Projected net worth at the end of the plan."
+                    }
                     value={
-                      result.retirementYear && s.atRetire != null
-                        ? fmtMoney(s.atRetire, ccy, { compact: true })
+                      atRetirement
+                        ? fmtMoney(s.atRetire!, ccy, { compact: true })
                         : fmtMoney(s.atEnd, ccy, { compact: true })
                     }
                     sub={
@@ -237,6 +289,16 @@ export function ForecastView({
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={chartData} margin={{ top: 20, right: 8, left: 4, bottom: 0 }}>
                   <CartesianGrid stroke="#eae8e3" vertical={false} />
+                  {shadeRange ? (
+                    <ReferenceArea
+                      yAxisId={primaryAxisId}
+                      x1={shadeRange.x1}
+                      x2={shadeRange.x2}
+                      fill="#ee6a3c"
+                      fillOpacity={0.08}
+                      stroke="none"
+                    />
+                  ) : null}
                   <XAxis dataKey="year" tick={AXIS} tickLine={false} axisLine={false} minTickGap={28} />
                   {currencies.includes("ILS") ? (
                     <YAxis
@@ -314,6 +376,24 @@ export function ForecastView({
                       dot={false}
                     />
                   ) : null}
+                  {startDot ? (
+                    <ReferenceDot
+                      yAxisId={primaryAxisId}
+                      x={startDot.year}
+                      y={startDot.value}
+                      r={3.5}
+                      fill={primaryCcy === "ILS" ? ILS_COLOR : USD_COLOR}
+                      stroke="#fff"
+                      strokeWidth={1.5}
+                      label={{
+                        value: startDot.label,
+                        position: "right",
+                        offset: 8,
+                        fontSize: 11,
+                        fill: "#6f6c66",
+                      }}
+                    />
+                  ) : null}
                 </LineChart>
               </ResponsiveContainer>
               <div className="flex items-center justify-center gap-4 pb-1 text-[12px] text-muted">
@@ -353,22 +433,34 @@ export function ForecastView({
               ))}
             </div>
             <div className="overflow-x-auto px-4 pb-4 pt-2">
-              {tab !== "events" ? (
-                <table className="w-full min-w-[720px] border-collapse text-[12.5px]">
-                  <thead>
-                    <tr>
-                      <th className="sticky left-0 bg-card py-1.5 pr-3 text-left font-medium text-muted">
-                        {tab === "accounts" ? "Net worth" : "Cash flow"}
+              <table className="w-full min-w-[720px] border-collapse text-[12.5px]">
+                <thead>
+                  <tr>
+                    <th className="sticky left-0 bg-card py-1.5 pr-3 text-left font-medium text-muted">
+                      {tab === "accounts"
+                        ? "Net worth"
+                        : tab === "cashflow"
+                          ? "Cash flow"
+                          : "Events"}
+                    </th>
+                    {yearCols.map((y) => (
+                      <th key={y} className="tnum px-2 py-1.5 text-right font-medium text-muted">
+                        {y}
                       </th>
-                      {yearCols.map((y) => (
-                        <th key={y} className="tnum px-2 py-1.5 text-right font-medium text-muted">
-                          {y}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {currencies.map((ccy) =>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {tab === "events" ? (
+                    <EventTimelineRows
+                      events={events}
+                      members={members}
+                      years={yearCols}
+                      activeId={panel?.kind === "event" ? panel.id : null}
+                      onOpen={(id) => openPanel({ kind: "event", id })}
+                    />
+                  ) : (
+                    currencies.map((ccy) =>
                       tab === "accounts" ? (
                         <NetWorthRows
                           key={ccy}
@@ -381,40 +473,18 @@ export function ForecastView({
                           activeId={panel?.kind === "account" ? panel.id : null}
                         />
                       ) : (
-                        [
-                          ["Income", "income"],
-                          ["Expenses", "expenses"],
-                          ["Savings", "savings"],
-                        ].map(([label, key]) => (
-                          <tr key={`${ccy}-${key}`} className="border-t border-line">
-                            <td className="sticky left-0 bg-card py-1.5 pr-3 font-semibold">
-                              {ccy === "ILS" ? "₪" : "$"} {label}
-                            </td>
-                            {(result.byCurrency[ccy] ?? []).map((r) => (
-                              <td
-                                key={r.year}
-                                className={cn(
-                                  "tnum px-2 py-1.5 text-right",
-                                  key === "savings" &&
-                                    (r.savings >= 0 ? "text-pos" : "text-neg"),
-                                )}
-                              >
-                                {fmtMoney(
-                                  r[key as "income" | "expenses" | "savings"],
-                                  ccy,
-                                  { compact: true },
-                                )}
-                              </td>
-                            ))}
-                          </tr>
-                        ))
+                        <CashflowRows
+                          key={ccy}
+                          ccy={ccy}
+                          result={result}
+                          expanded={expanded}
+                          onToggle={toggleRow}
+                        />
                       ),
-                    )}
-                  </tbody>
-                </table>
-              ) : (
-                <EventList events={events} />
-              )}
+                    )
+                  )}
+                </tbody>
+              </table>
               {tab === "accounts" &&
               accountSettings.some((a) => !a.include) ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-3 text-[12px] text-muted">
@@ -449,13 +519,22 @@ export function ForecastView({
           />
         ) : panel ? (
           <AccountPanel
-            key={panel.kind === "account" ? `account:${panel.id}` : panel.kind}
+            key={
+              panel.kind === "account"
+                ? `account:${panel.id}`
+                : panel.kind === "event"
+                  ? `event:${panel.id}`
+                  : panel.kind
+            }
             kind={panel.kind}
             account={
               panel.kind === "account"
                 ? (accountSettings.find((a) => a.id === panel.id) ?? null)
                 : null
             }
+            eventId={panel.kind === "event" ? panel.id : null}
+            events={events}
+            birthYear={youngestBirthYear}
             lastAccountId={lastAccountId}
             accounts={accountSettings}
             config={config}
@@ -608,7 +687,8 @@ function NetWorthRows({
     if (r.breakdown.some((b) => b.contribution !== 0)) {
       out.push(
         <tr key={`${ccy}:bd:${r.id}:contribution`} className="border-t border-line">
-          {labelCell("Contribution")}
+          {/* Monarch labels the Extra bucket's flows "Deposits". */}
+          {labelCell(r.id === null ? "Deposits" : "Contribution")}
           {r.breakdown.map((b, i) => (
             <td
               key={i}
@@ -702,13 +782,20 @@ function NetWorthRows({
       if (group === "Extra") {
         // The Extra bucket is its own group-level row; no sub-accounts.
         for (const r of groupRows) {
+          const bdKey = `${ccy}:b:extra`;
+          const bdOpen = expanded.has(bdKey);
           out.push(
             <tr key={`${ccy}:extra`} className="border-t border-line">
               <td className="sticky left-0 bg-card py-1.5 pr-3">
-                <span className="flex items-center gap-1.5 pl-4 font-medium">
-                  <span className="w-[18px] shrink-0" />
+                <span className="flex items-center gap-1 pl-4 font-medium">
+                  <Chevron open={bdOpen} onClick={() => onToggle(bdKey)} />
                   Extra savings
                   <InfoDot title="Savings that are not directed to a specific account." />
+                  {r.ratePct !== 0 ? (
+                    <span className="shrink-0 text-[11px] text-muted">
+                      ↗ {fmtRate(r.ratePct)}%
+                    </span>
+                  ) : null}
                 </span>
               </td>
               {r.series.map((v, i) => (
@@ -718,6 +805,7 @@ function NetWorthRows({
               ))}
             </tr>,
           );
+          if (bdOpen) out.push(...breakdownRows(r));
         }
         continue;
       }
@@ -765,68 +853,223 @@ function NetWorthRows({
 
 /* ------------------------------ Fragments ------------------------------ */
 
-function StatCell({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatCell({
+  label,
+  value,
+  sub,
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tooltip?: string;
+}) {
   return (
     <div className="px-4 py-3">
-      <div className="text-[11.5px] text-muted">{label}</div>
+      <div className="text-[11.5px] text-muted">
+        {tooltip ? (
+          <span title={tooltip} className="cursor-help">
+            {label} <span className="text-[10px] text-faint">ⓘ</span>
+          </span>
+        ) : (
+          label
+        )}
+      </div>
       <div className="tnum text-[19px] font-semibold">{value}</div>
       {sub ? <div className="text-[11px] text-faint">{sub}</div> : null}
     </div>
   );
 }
 
-function EventList({ events }: { events: ForecastEvent[] }) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  if (events.length === 0) {
+/** Cash Flow tab: Income tree, Expenses tree, Net Cash Flow — per currency. */
+function CashflowRows({
+  ccy,
+  result,
+  expanded,
+  onToggle,
+}: {
+  ccy: string;
+  result: ForecastResult;
+  expanded: Set<string>;
+  onToggle: (key: string) => void;
+}) {
+  const cf = result.cashflow[ccy];
+  if (!cf) return null;
+  const sign = ccy === "ILS" ? "₪" : "$";
+  const nYears = cf.net.length;
+
+  function sumSeries(rows: ForecastSeriesRow[]): number[] {
+    const out = new Array<number>(nYears).fill(0);
+    for (const r of rows) for (let i = 0; i < nYears; i++) out[i] += r.series[i] ?? 0;
+    return out;
+  }
+
+  function subRow(r: ForecastSeriesRow, fallbackIcon: string, key: string) {
     return (
-      <p className="py-4 text-center text-[13px] text-muted">
-        No life events yet. Add one — buy a home, have a kid, change income.
-      </p>
+      <tr key={key} className="border-t border-line">
+        <td className="sticky left-0 bg-card py-1 pr-3">
+          <span className="flex items-center gap-1.5 pl-6 text-[12px] text-muted">
+            <span className="text-[13px]">{r.icon ?? fallbackIcon}</span>
+            <span className="truncate" dir="auto">
+              {r.name}
+            </span>
+          </span>
+        </td>
+        {r.series.map((v, i) => (
+          <td key={i} className="tnum px-2 py-1 text-right text-[12px] text-muted">
+            {fmtMoney(v, ccy, { compact: true })}
+          </td>
+        ))}
+      </tr>
     );
   }
-  return (
-    <div className="flex flex-col">
-      {events.map((ev) => (
-        <div
-          key={ev.id}
-          className="flex items-center justify-between border-t border-line py-2 first:border-0"
+
+  function totalRow(label: string, rowKey: string, values: number[]) {
+    const open = expanded.has(rowKey);
+    return (
+      <tr key={rowKey} className="border-t border-line">
+        <td className="sticky left-0 bg-card py-1.5 pr-3">
+          <span className="flex items-center gap-1 font-semibold">
+            <Chevron open={open} onClick={() => onToggle(rowKey)} />
+            {sign} {label}
+          </span>
+        </td>
+        {values.map((v, i) => (
+          <td key={i} className="tnum px-2 py-1.5 text-right font-semibold">
+            {fmtMoney(v, ccy, { compact: true })}
+          </td>
+        ))}
+      </tr>
+    );
+  }
+
+  const incomeKey = `${ccy}:cf:income`;
+  const expensesKey = `${ccy}:cf:expenses`;
+  const out: ReactNode[] = [totalRow("Income", incomeKey, sumSeries(cf.incomeSources))];
+  if (expanded.has(incomeKey)) {
+    out.push(
+      ...cf.incomeSources.map((r, i) => subRow(r, "💼", `${ccy}:cf:i:${r.id ?? i}`)),
+    );
+  }
+  out.push(totalRow("Expenses", expensesKey, sumSeries(cf.expenseRows)));
+  if (expanded.has(expensesKey)) {
+    out.push(
+      ...cf.expenseRows.map((r, i) => subRow(r, "💳", `${ccy}:cf:e:${r.id ?? i}`)),
+    );
+  }
+  out.push(
+    <tr key={`${ccy}:cf:net`} className="border-t border-line">
+      <td className="sticky left-0 bg-card py-1.5 pr-3 font-semibold">
+        {sign} Net Cash Flow
+      </td>
+      {cf.net.map((v, i) => (
+        <td
+          key={i}
+          className={cn(
+            "tnum px-2 py-1.5 text-right font-semibold",
+            v >= 0 ? "text-pos" : "text-neg",
+          )}
         >
-          <span className="flex items-center gap-2.5">
-            <span className="text-[16px]">{ev.icon ?? "🎯"}</span>
-            <span>
-              <span className="block text-[13.5px] font-medium">{ev.name}</span>
-              <span className="block text-[12px] text-muted">
-                {ev.year}
-                {ev.kind === "yearly"
-                  ? ` – ${ev.endYear ?? "forever"} · yearly`
-                  : " · one time"}
-                {" · "}
-                {ev.affects === "income" ? "adds income" : "adds expense"}
-              </span>
-            </span>
-          </span>
-          <span className="flex items-center gap-2">
-            <span className="tnum text-[13.5px] font-medium">
-              {fmtMoney(ev.amount, ev.currency, { decimals: false })}
-            </span>
-            <button
-              disabled={pending}
-              onClick={() =>
-                startTransition(async () => {
-                  await deleteForecastEvent(ev.id);
-                  router.refresh();
-                })
-              }
-              className="cursor-pointer text-faint hover:text-neg"
-              title="Delete event"
-            >
-              <Trash2 size={14} />
-            </button>
-          </span>
-        </div>
+          {fmtMoney(v, ccy, { compact: true })}
+        </td>
       ))}
-    </div>
+    </tr>,
+  );
+  return <>{out}</>;
+}
+
+/** Events tab: timeline grid — one row per event, dot under its year column. */
+function EventTimelineRows({
+  events,
+  members,
+  years,
+  activeId,
+  onOpen,
+}: {
+  events: ForecastEvent[];
+  members: ForecastMember[];
+  years: number[];
+  activeId: string | null;
+  onOpen: (id: string) => void;
+}) {
+  const lastYear = years[years.length - 1];
+  const retiring = members.filter((m) => m.retirementYear != null);
+
+  function row(opts: {
+    key: string;
+    icon: string;
+    name: string;
+    year: number;
+    active?: boolean;
+    onClick?: () => void;
+  }) {
+    const { key, icon, name, year, active, onClick } = opts;
+    return (
+      <tr
+        key={key}
+        onClick={onClick}
+        className={cn("border-t border-line", onClick && "cursor-pointer")}
+      >
+        <td className="sticky left-0 bg-card py-1.5 pr-3">
+          <span className="flex items-center gap-2">
+            <span className="w-5 shrink-0 text-center text-[14px]">{icon}</span>
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate text-[13px] font-medium",
+                active && "text-accent",
+              )}
+              dir="auto"
+            >
+              {name}
+            </span>
+            <span className="tnum shrink-0 pl-2 text-[11.5px] text-faint">{year}</span>
+            {onClick ? (
+              <ChevronRight size={13} className="shrink-0 text-faint" />
+            ) : (
+              <span className="w-[13px] shrink-0" />
+            )}
+          </span>
+        </td>
+        {years.map((y) => (
+          <td key={y} className="px-2 py-1.5 text-center">
+            {y === year ? (
+              <span
+                className={cn(
+                  "mx-auto block h-2 w-2 rounded-full",
+                  active ? "bg-accent" : "bg-accent/60",
+                )}
+              />
+            ) : null}
+          </td>
+        ))}
+      </tr>
+    );
+  }
+
+  return (
+    <>
+      {events.map((ev) =>
+        row({
+          key: ev.id,
+          icon: ev.icon ?? "🎯",
+          name: ev.name,
+          year: ev.year,
+          active: activeId === ev.id,
+          onClick: () => onOpen(ev.id),
+        }),
+      )}
+      {retiring.map((m) =>
+        row({
+          key: `retire:${m.userId}`,
+          icon: "🌅",
+          name: retiring.length > 1 ? `Retirement · ${m.name}` : "Retirement",
+          year: m.retirementYear!,
+        }),
+      )}
+      {lastYear != null
+        ? row({ key: "end", icon: "🏁", name: "End of plan", year: lastYear })
+        : null}
+    </>
   );
 }
 

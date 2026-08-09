@@ -79,8 +79,9 @@ export async function updateAssumptions(payload: string): Promise<ForecastAction
     useActualExpenses: boolean;
     expensesOverride: Record<string, number | null>;
     futureValues?: "today" | "nominal";
-    incomes: { id?: string; name: string; yearlyAmount: number; currency: string; memberUserId: string | null }[];
+    incomes: { id?: string; name: string; yearlyAmount: number; currency: string; memberUserId: string | null; excluded?: boolean }[];
     retirementYears: { userId: string; retirementYear: number }[];
+    lifeExpectancies?: { userId: string; lifeExpectancy: number }[];
   };
   try {
     data = JSON.parse(payload);
@@ -107,12 +108,20 @@ export async function updateAssumptions(payload: string): Promise<ForecastAction
       name: src.name.trim() || "Income",
       yearly_amount: src.yearlyAmount,
       currency: src.currency === "USD" ? "USD" : "ILS",
+      excluded: !!src.excluded,
     });
   }
   for (const m of data.retirementYears) {
     await supabase
       .from("space_members")
       .update({ retirement_year: m.retirementYear })
+      .eq("space_id", space.id)
+      .eq("user_id", m.userId);
+  }
+  for (const m of data.lifeExpectancies ?? []) {
+    await supabase
+      .from("space_members")
+      .update({ life_expectancy: m.lifeExpectancy })
       .eq("space_id", space.id)
       .eq("user_id", m.userId);
   }
@@ -149,6 +158,47 @@ export async function addForecastEvent(payload: string): Promise<ForecastActionR
     amount: Math.abs(ev.amount),
     currency: ev.currency === "USD" ? "USD" : "ILS",
   });
+  if (error) return { error: error.message };
+  revalidatePath("/forecasting");
+  return { error: null };
+}
+
+export async function updateForecastEvent(
+  eventId: string,
+  payload: string,
+): Promise<ForecastActionResult> {
+  const { supabase } = await getContext();
+  let ev: {
+    name: string;
+    icon: string | null;
+    kind: "one_time" | "yearly";
+    affects: "income" | "expense";
+    year: number;
+    endYear: number | null;
+    amount: number;
+    currency: string;
+  };
+  try {
+    ev = JSON.parse(payload);
+  } catch {
+    return { error: "Bad event." };
+  }
+  if (!ev.year || !Number.isFinite(ev.year) || !ev.amount || !Number.isFinite(ev.amount)) {
+    return { error: "Year and amount are required." };
+  }
+  const { error } = await supabase
+    .from("forecast_events")
+    .update({
+      name: ev.name.trim() || "Event",
+      icon: ev.icon || "🎯",
+      kind: ev.kind,
+      affects: ev.affects,
+      year: ev.year,
+      end_year: ev.kind === "yearly" ? ev.endYear : null,
+      amount: Math.abs(ev.amount),
+      currency: ev.currency === "USD" ? "USD" : "ILS",
+    })
+    .eq("id", eventId);
   if (error) return { error: error.message };
   revalidatePath("/forecasting");
   return { error: null };

@@ -2,8 +2,9 @@
 // Model: each account compounds at its own (possibly year-varying) rate.
 // Positive net savings are routed to accounts via the ordered split rows
 // ("amount" rows are Monarch's yearly direct contribution; "percent" rows
-// take a share of the remaining pool); whatever is left piles up in a
-// 0%-growth "Extra savings" bucket. Negative years draw the bucket down
+// take a share of the remaining pool); whatever is left piles up in an
+// "Extra savings" bucket that compounds at inflation (so it keeps its real
+// value). Negative years draw the bucket down
 // and then withdraw from accounts in the configured order. All displayed
 // numbers are deflated to today's money unless futureValues="nominal".
 
@@ -12,15 +13,18 @@ export interface ForecastMember {
   name: string;
   birthYear: number | null;
   retirementYear: number | null;
+  lifeExpectancy: number;
 }
 
 export interface ForecastIncome {
   id: string;
   name: string;
+  icon: string | null;
   memberUserId: string | null;
   yearlyAmount: number;
   currency: string;
   stopsAtRetirement: boolean;
+  excluded: boolean; // contributes 0 income but still shows in cashflow
 }
 
 export interface ForecastEvent {
@@ -89,9 +93,22 @@ export interface ForecastAccountRow {
   breakdown: { start: number; inflation: number; growth: number; contribution: number }[];
 }
 
+// One Cash Flow tab tree row: an income source, an event, or the base
+// "Living expenses" row (id null). Series values are display units per year.
+export interface ForecastSeriesRow {
+  id: string | null;
+  name: string;
+  icon: string | null;
+  series: number[];
+}
+
 export interface ForecastResult {
   byCurrency: Record<string, ForecastYearRow[]>;
   accountRows: Record<string, ForecastAccountRow[]>; // per currency
+  cashflow: Record<
+    string,
+    { incomeSources: ForecastSeriesRow[]; expenseRows: ForecastSeriesRow[]; net: number[] }
+  >; // per currency
   retirementYear: number | null; // earliest member retirement
 }
 
@@ -106,9 +123,16 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
 
   const byCurrency: Record<string, ForecastYearRow[]> = {};
   const accountRows: Record<string, ForecastAccountRow[]> = {};
+  const cashflow: ForecastResult["cashflow"] = {};
   for (const ccy of inputs.currencies) {
     const rows: ForecastYearRow[] = [];
     const accs = inputs.accounts.filter((a) => a.currency === ccy);
+    const ccyIncomes = inputs.incomes.filter((s) => s.currency === ccy);
+    const ccyEvents = inputs.events.filter((e) => e.currency === ccy);
+    const incomeSeries: number[][] = ccyIncomes.map(() => []);
+    const eventSeries: number[][] = ccyEvents.map(() => []);
+    const livingSeries: number[] = [];
+    const netSeries: number[] = [];
     const idxById = new Map(accs.map((a, i) => [a.id, i]));
 
     const sortedPoints = accs.map((a) =>
@@ -149,7 +173,7 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
     const extraSeries: number[] = [];
     const extraBreakdown: typeof breakdowns[number] = [];
     let prevExtraDisp = 0;
-    let extra = 0; // savings not directed at any account; grows at 0%
+    let extra = 0; // savings not directed at any account; compounds at inflation
 
     for (let year = inputs.startYear; year <= inputs.endYear; year++) {
       const yearsOut = year - inputs.startYear;
@@ -157,28 +181,37 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
       const deflator = inputs.futureValues === "today" ? inflate : 1;
 
       let income = 0;
-      for (const src of inputs.incomes) {
-        if (src.currency !== ccy) continue;
-        if (src.stopsAtRetirement && src.memberUserId) {
-          const m = memberById.get(src.memberUserId);
-          if (m?.retirementYear != null && year > m.retirementYear) continue;
+      for (let si = 0; si < ccyIncomes.length; si++) {
+        const src = ccyIncomes[si];
+        let amt = 0;
+        if (!src.excluded) {
+          let active = true;
+          if (src.stopsAtRetirement && src.memberUserId) {
+            const m = memberById.get(src.memberUserId);
+            if (m?.retirementYear != null && year > m.retirementYear) active = false;
+          }
+          if (active) amt = src.yearlyAmount * inflate;
         }
-        income += src.yearlyAmount * inflate;
+        income += amt;
+        incomeSeries[si].push(Math.round(amt / deflator));
       }
 
-      let expenses = (inputs.baseExpenses[ccy] ?? 0) * inflate;
+      const baseExpense = (inputs.baseExpenses[ccy] ?? 0) * inflate;
+      let expenses = baseExpense;
+      livingSeries.push(Math.round(baseExpense / deflator));
 
       const yearEvents: ForecastEvent[] = [];
-      for (const ev of inputs.events) {
-        if (ev.currency !== ccy) continue;
+      for (let ei = 0; ei < ccyEvents.length; ei++) {
+        const ev = ccyEvents[ei];
         const active =
           ev.kind === "one_time"
             ? ev.year === year
             : ev.year <= year && (ev.endYear == null || year <= ev.endYear);
-        if (!active) continue;
-        if (ev.year === year) yearEvents.push(ev);
-        if (ev.affects === "income") income += ev.amount;
-        else expenses += ev.amount;
+        const amt = active ? ev.amount : 0;
+        if (active && ev.year === year) yearEvents.push(ev);
+        if (ev.affects === "income") income += amt;
+        else expenses += amt;
+        eventSeries[ei].push(Math.round(amt / deflator));
       }
 
       const growthNom = accs.map((_, i) => balances[i] * (rateFor(i, year) / 100));
@@ -186,7 +219,12 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
       const contribNom = accs.map(() => 0);
 
       const savings = income - expenses;
+      netSeries.push(Math.round(savings / deflator));
       const extraStart = extra;
+      // Extra compounds nominally at inflation, so its real value holds
+      // (in today's-money display its growth and inflation rows offset).
+      const extraGrowthNom = extra * (inputs.inflationPct / 100);
+      extra += extraGrowthNom;
       if (savings > 0 && inputs.splitEnabled) {
         let pool = savings;
         for (const s of ccySplits) {
@@ -236,12 +274,15 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
       }
 
       const extraEndDisp = extra / deflator;
-      const extraContribDisp = (extra - extraStart) / deflator;
+      const extraGrowthDisp = extraGrowthNom / deflator;
+      const extraContribDisp = (extra - extraStart - extraGrowthNom) / deflator;
       extraSeries.push(Math.round(extraEndDisp));
       extraBreakdown.push({
         start: Math.round(prevExtraDisp),
-        inflation: Math.round(extraEndDisp - prevExtraDisp - extraContribDisp),
-        growth: 0,
+        inflation: Math.round(
+          extraEndDisp - prevExtraDisp - extraGrowthDisp - extraContribDisp,
+        ),
+        growth: Math.round(extraGrowthDisp),
         contribution: Math.round(extraContribDisp),
       });
       prevExtraDisp = extraEndDisp;
@@ -272,13 +313,39 @@ export function computeForecast(inputs: ForecastInputs): ForecastResult {
         name: "Extra savings",
         group: "Extra",
         isLiability: false,
-        ratePct: 0,
+        ratePct: inputs.inflationPct,
         series: extraSeries,
         breakdown: extraBreakdown,
       },
     ];
+    const eventRow = (ev: ForecastEvent, i: number): ForecastSeriesRow => ({
+      id: ev.id,
+      name: ev.name,
+      icon: ev.icon,
+      series: eventSeries[i],
+    });
+    cashflow[ccy] = {
+      incomeSources: [
+        ...ccyIncomes.map((s, i) => ({
+          id: s.id,
+          name: s.name,
+          icon: s.icon,
+          series: incomeSeries[i],
+        })),
+        ...ccyEvents
+          .map(eventRow)
+          .filter((_, i) => ccyEvents[i].affects === "income"),
+      ],
+      expenseRows: [
+        { id: null, name: "Living expenses", icon: null, series: livingSeries },
+        ...ccyEvents
+          .map(eventRow)
+          .filter((_, i) => ccyEvents[i].affects === "expense"),
+      ],
+      net: netSeries,
+    };
   }
-  return { byCurrency, accountRows, retirementYear };
+  return { byCurrency, accountRows, cashflow, retirementYear };
 }
 
 export function yearOf(dateStr: string | null): number | null {
