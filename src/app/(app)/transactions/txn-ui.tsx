@@ -512,18 +512,27 @@ function TxnRow({
   const name = nameOverride ?? txn.name;
 
   useDismiss(merchantRef, editorOpen, () => setEditorOpen(false));
-  useDismiss(scopeRef, scopeFor !== null, () => setScopeFor(null));
+  // Dismissing the scope popover applies "only this transaction" — the pill
+  // already shows the new category, so the least surprising close is a save.
+  useDismiss(scopeRef, scopeFor !== null, () => applyScope(false, false));
 
   // Shared by the row's picker and the side peek so both stay in sync.
+  // A changed category is NOT written yet — the scope popover decides how
+  // far it applies first. Writing early made the row vanish mid-choice
+  // whenever the list was filtered by the old category.
   function selectCategory(id: string) {
     const changed = id !== "" && id !== localCat;
     setLocalCat(id);
-    startTransition(async () => {
-      await setTransactionCategory(txn.id, id);
-      router.refresh();
-    });
-    if (changed) setAmountOnly(false);
-    setScopeFor(changed ? id : null);
+    if (!changed) {
+      setScopeFor(null);
+      startTransition(async () => {
+        await setTransactionCategory(txn.id, id);
+        router.refresh();
+      });
+      return;
+    }
+    setAmountOnly(false);
+    setScopeFor(id);
   }
 
   function applyScope(future: boolean, historical: boolean) {
@@ -531,7 +540,10 @@ function TxnRow({
     if (!catId) return;
     setScopeFor(null);
     startTransition(async () => {
-      await applyCategoryScope(txn.id, catId, { future, historical, amountOnly });
+      await setTransactionCategory(txn.id, catId);
+      if (future || historical) {
+        await applyCategoryScope(txn.id, catId, { future, historical, amountOnly });
+      }
       router.refresh();
     });
   }
@@ -694,18 +706,16 @@ function TxnRow({
             </label>
             {(
               [
-                ["Only this transaction", null],
+                ["Only this transaction", [false, false]],
                 ["All future transactions", [true, false]],
                 ["Future + all past transactions", [true, true]],
-              ] as [string, [boolean, boolean] | null][]
+              ] as [string, [boolean, boolean]][]
             ).map(([label, opt]) => (
               <button
                 key={label}
                 type="button"
                 disabled={pending}
-                onClick={() =>
-                  opt ? applyScope(opt[0], opt[1]) : setScopeFor(null)
-                }
+                onClick={() => applyScope(opt[0], opt[1])}
                 className="block w-full cursor-pointer rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-hover disabled:opacity-50"
               >
                 {label}
