@@ -24,6 +24,8 @@ export interface MonthOccurrence {
   amount: number; // positive magnitude
   currency: string;
   kind: "expense" | "income";
+  categoryId: string | null; // paid = the txn's category, else the stream's
+  logoDomain: string | null;
   paid: boolean;
   txnId: string | null;
   daysUntil: number; // negative = overdue/past
@@ -166,12 +168,15 @@ export function buildRecurringMonth(
       accountId: s.account_id,
       currency: s.currency,
       kind: s.kind,
+      categoryId: s.category_id,
+      logoDomain: s.logo_domain,
     };
     for (const t of txns) {
       paid.push({
         ...base,
         date: t.date,
         amount: Math.abs(Number(t.amount)),
+        categoryId: t.category_id ?? s.category_id,
         paid: true,
         txnId: t.id,
         daysUntil: daysBetween(todayYmd, t.date),

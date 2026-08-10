@@ -38,7 +38,7 @@ import {
   searchRecurringMerchants,
   setRecurringStatus,
 } from "../actions";
-import { RecurringModal, type RecurringDraft } from "./recurring-modal";
+import { MerchantLogo, RecurringModal, type RecurringDraft } from "./recurring-modal";
 
 export interface StreamLite {
   id: string;
@@ -51,6 +51,8 @@ export interface StreamLite {
   status: "suggested" | "active" | "dismissed" | "ended";
   accountId: string | null;
   startDate: string | null;
+  categoryId: string | null;
+  logoDomain: string | null;
 }
 
 export interface CardCycle {
@@ -106,6 +108,7 @@ export function RecurringUI({
   suggestions,
   cards,
   accounts,
+  categories,
 }: {
   month: string;
   tab: "monthly" | "all";
@@ -124,6 +127,11 @@ export function RecurringUI({
     () => new Map(accounts.map((a) => [a.id, a.name])),
     [accounts],
   );
+  const catLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of categories ?? []) m.set(c.id, `${c.icon ? `${c.icon} ` : ""}${c.name}`);
+    return m;
+  }, [categories]);
   const streamById = useMemo(
     () => new Map(streams.map((s) => [s.id, s])),
     [streams],
@@ -144,6 +152,7 @@ export function RecurringUI({
       currency: s.currency,
       startDate: s.startDate ?? localToday(),
       status: s.status === "ended" ? "ended" : "active",
+      logoDomain: s.logoDomain,
     });
   }
 
@@ -183,6 +192,7 @@ export function RecurringUI({
             data={data}
             cards={cards}
             accountName={accountName}
+            catLabel={catLabel}
             onAdd={openAdd}
             onEdit={editByStreamId}
           />
@@ -211,6 +221,7 @@ function MonthlyView({
   data,
   cards,
   accountName,
+  catLabel,
   onAdd,
   onEdit,
 }: {
@@ -218,6 +229,7 @@ function MonthlyView({
   data: RecurringMonth;
   cards: CardCycle[];
   accountName: Map<string, string>;
+  catLabel: Map<string, string>;
   onAdd: (kind: "expense" | "income") => void;
   onEdit: (streamId: string) => void;
 }) {
@@ -330,12 +342,14 @@ function MonthlyView({
             title="Upcoming"
             occurrences={data.upcoming}
             accountName={accountName}
+            catLabel={catLabel}
             onEdit={onEdit}
           />
           <OccurrenceSection
             title="Paid"
             occurrences={data.paid}
             accountName={accountName}
+            catLabel={catLabel}
             onEdit={onEdit}
           />
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
@@ -421,17 +435,19 @@ function SummaryColumn({
 }
 
 const gridCls =
-  "grid grid-cols-[minmax(0,1fr)_150px_170px_120px_36px] items-center gap-3 px-5";
+  "grid grid-cols-[minmax(0,1fr)_140px_150px_150px_110px_36px] items-center gap-3 px-5";
 
 function OccurrenceSection({
   title,
   occurrences,
   accountName,
+  catLabel,
   onEdit,
 }: {
   title: string;
   occurrences: MonthOccurrence[];
   accountName: Map<string, string>;
+  catLabel: Map<string, string>;
   onEdit: (streamId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
@@ -465,6 +481,7 @@ function OccurrenceSection({
               <div>Merchant</div>
               <div>Date</div>
               <div>Payment account</div>
+              <div>Category</div>
               <div className="text-right">Amount</div>
               <div />
             </div>
@@ -473,6 +490,7 @@ function OccurrenceSection({
                 key={`${o.streamId}-${o.date}-${o.txnId ?? "exp"}`}
                 o={o}
                 accountName={accountName}
+                catLabel={catLabel}
                 onEdit={onEdit}
               />
             ))}
@@ -493,18 +511,18 @@ function relDays(daysUntil: number): string {
 function OccurrenceRow({
   o,
   accountName,
+  catLabel,
   onEdit,
 }: {
   o: MonthOccurrence;
   accountName: Map<string, string>;
+  catLabel: Map<string, string>;
   onEdit: (streamId: string) => void;
 }) {
   return (
     <div className={cn(gridCls, "py-2.5 hover:bg-hover")}>
       <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-active text-[14px]">
-          🔁
-        </span>
+        <MerchantLogo name={o.name} domain={o.logoDomain} size={32} />
         <div className="min-w-0">
           <div className="truncate text-[13.5px] font-medium" dir="auto">
             {o.name}
@@ -520,6 +538,9 @@ function OccurrenceRow({
       </div>
       <div className="truncate text-[13px] text-ink-soft" dir="auto">
         {o.accountId ? (accountName.get(o.accountId) ?? "—") : "—"}
+      </div>
+      <div className="truncate text-[13px] text-ink-soft" dir="auto">
+        {o.categoryId ? (catLabel.get(o.categoryId) ?? "—") : "—"}
       </div>
       <div className="flex items-center justify-end gap-1.5">
         {o.paid ? <Check size={13} className="shrink-0 text-pos" /> : null}
@@ -678,9 +699,7 @@ function SectionLabel({ title, count }: { title: string; count: number }) {
 function StreamCell({ s }: { s: StreamLite }) {
   return (
     <div className="flex min-w-0 items-center gap-3">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-active text-[14px]">
-        🔁
-      </span>
+      <MerchantLogo name={s.merchantName} domain={s.logoDomain} size={32} />
       <div className="min-w-0">
         <div className="truncate text-[13.5px] font-medium" dir="auto">
           {s.merchantName}
@@ -737,12 +756,13 @@ function AddRecurringModal({
   defaultKind: "expense" | "income";
   onClose: () => void;
 }) {
+  const PAGE = 30;
   const [q, setQ] = useState("");
-  const [results, setResults] = useState<MerchantResult[] | null>(null);
+  const [all, setAll] = useState<MerchantResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
   const [draft, setDraft] = useState<RecurringDraft | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [visible, setVisible] = useState(PAGE);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -752,29 +772,31 @@ function AddRecurringModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // One fetch of every merchant on open; typing filters the full list in
+  // memory, so search covers rows the scroll hasn't rendered yet.
   useEffect(() => {
-    const term = q.trim();
-    if (timer.current) clearTimeout(timer.current);
-    if (term.length < 3) {
-      setResults(null);
-      setError(null);
-      return;
+    startTransition(async () => {
+      const res = await searchRecurringMerchants("");
+      if (res.error) setError(res.error);
+      else setAll(res.results);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const term = q.trim().toLowerCase();
+  const results =
+    all === null
+      ? null
+      : term
+        ? all.filter((r) => r.name.toLowerCase().includes(term))
+        : all;
+
+  function onScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
+      setVisible((v) => v + PAGE);
     }
-    timer.current = setTimeout(() => {
-      startTransition(async () => {
-        const res = await searchRecurringMerchants(term);
-        if (res.error) {
-          setError(res.error);
-          return;
-        }
-        setError(null);
-        setResults(res.results);
-      });
-    }, 300);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [q]);
+  }
 
   if (draft) {
     return <RecurringModal initial={draft} onClose={onClose} />;
@@ -814,31 +836,32 @@ function AddRecurringModal({
           <input
             autoFocus
             value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Enter 3 characters or more..."
+            onChange={(e) => {
+              setQ(e.target.value);
+              setVisible(PAGE);
+            }}
+            placeholder="Search merchants..."
             dir="auto"
             className={inputCls}
           />
         </div>
-        <div className="max-h-[320px] min-h-[220px] overflow-y-auto px-2 pb-3">
-          {q.trim().length < 3 ? (
+        <div
+          className="max-h-[320px] min-h-[220px] overflow-y-auto px-2 pb-3"
+          onScroll={onScroll}
+        >
+          {error ? (
+            <div className="px-4 py-8 text-center text-[12.5px] text-neg">{error}</div>
+          ) : results === null ? (
             <div className="flex flex-col items-center gap-1.5 px-6 py-10 text-center">
               <Search size={20} className="mb-1 text-faint" />
-              <div className="text-[13.5px] font-semibold">Search for a merchant</div>
-              <div className="max-w-[280px] text-[12.5px] text-muted">
-                Enter a search term above to find merchants with recurring transactions.
-              </div>
+              <div className="text-[13.5px] font-semibold">Loading merchants…</div>
             </div>
-          ) : error ? (
-            <div className="px-4 py-8 text-center text-[12.5px] text-neg">{error}</div>
-          ) : results === null || (pending && results.length === 0) ? (
-            <div className="px-4 py-8 text-center text-[12.5px] text-muted">Searching…</div>
           ) : results.length === 0 ? (
             <div className="px-4 py-8 text-center text-[12.5px] text-muted">
-              No merchants found.
+              No merchants match.
             </div>
           ) : (
-            results.map((r) => (
+            results.slice(0, visible).map((r) => (
               <button
                 type="button"
                 key={r.name}

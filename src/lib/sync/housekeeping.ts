@@ -176,7 +176,7 @@ export async function detectRecurring(spaceId: string): Promise<number> {
   since.setMonth(since.getMonth() - 13);
   const { data: txns, error } = await admin
     .from("transactions")
-    .select("name, account_id, date, amount, currency")
+    .select("name, account_id, date, amount, currency, category_id")
     .eq("space_id", spaceId)
     .eq("is_transfer", false)
     .eq("hide_from_reports", false)
@@ -190,12 +190,12 @@ export async function detectRecurring(spaceId: string): Promise<number> {
     .eq("space_id", spaceId);
   const known = new Set((existing ?? []).map((r) => r.merchant_name as string));
 
-  const groups = new Map<string, { date: string; amount: number; currency: string; account_id: string }[]>();
+  const groups = new Map<string, { date: string; amount: number; currency: string; account_id: string; category_id: string | null }[]>();
   for (const t of txns ?? []) {
     const key = (t.name as string).trim();
     if (!key || known.has(key)) continue;
     const arr = groups.get(key) ?? [];
-    arr.push(t as { date: string; amount: number; currency: string; account_id: string });
+    arr.push(t as { date: string; amount: number; currency: string; account_id: string; category_id: string | null });
     groups.set(key, arr);
   }
 
@@ -235,6 +235,7 @@ export async function detectRecurring(spaceId: string): Promise<number> {
       currency: last.currency,
       next_expected_date: next.toISOString().slice(0, 10),
       start_date: list[0].date,
+      category_id: last.category_id,
       kind: Number(last.amount) > 0 ? "income" : "expense",
       status: "suggested",
     });

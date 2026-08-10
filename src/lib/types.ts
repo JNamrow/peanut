@@ -156,6 +156,8 @@ export interface RecurringStream {
   kind: "expense" | "income";
   status: "suggested" | "active" | "dismissed" | "ended";
   start_date: string | null;
+  category_id: string | null;
+  logo_domain: string | null;
   created_at?: string;
 }
 

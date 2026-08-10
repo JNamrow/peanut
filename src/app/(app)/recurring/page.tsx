@@ -21,6 +21,8 @@ function toLite(s: StreamRow): StreamLite {
     status: s.status as StreamLite["status"],
     accountId: s.account_id,
     startDate: s.start_date ?? null,
+    categoryId: s.category_id ?? null,
+    logoDomain: s.logo_domain ?? null,
   };
 }
 

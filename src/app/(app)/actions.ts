@@ -465,6 +465,7 @@ export async function upsertRecurringStream(
     startDate: string;
     status?: "active" | "ended";
     accountId?: string | null;
+    logoDomain?: string | null;
   };
   try {
     data = JSON.parse(payload);
@@ -480,6 +481,17 @@ export async function upsertRecurringStream(
   const amount = Math.abs(Number(data.amount));
   if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be above zero." };
 
+  // Category rides along from the merchant's most recent categorized txn.
+  const { data: lastCat } = await supabase
+    .from("transactions")
+    .select("category_id")
+    .eq("space_id", space.id)
+    .eq("name", merchantName)
+    .not("category_id", "is", null)
+    .order("date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   const row = {
     merchant_name: merchantName,
     cadence: data.cadence,
@@ -489,6 +501,8 @@ export async function upsertRecurringStream(
     start_date: data.startDate,
     status: data.status === "ended" ? "ended" : "active",
     account_id: data.accountId ?? null,
+    logo_domain: data.logoDomain?.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || null,
+    category_id: (lastCat?.category_id as string | null) ?? null,
     next_expected_date: firstOccurrenceOnOrAfter(data.cadence, data.startDate, today()),
   };
 
@@ -541,18 +555,21 @@ export async function searchRecurringMerchants(q: string): Promise<{
     streamId: string | null;
   }[];
 }> {
+  // Empty q returns EVERY merchant — the modal loads the full list once
+  // and filters it in memory, so search covers merchants not yet rendered.
   const { supabase, space } = await getContext();
   const query = q.trim();
-  if (query.length < 2) return { error: null, results: [] };
 
-  const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-  const { data: txns, error } = await supabase
+  let dbq = supabase
     .from("transactions")
     .select("name, date, amount, currency")
     .eq("space_id", space.id)
-    .ilike("name", pattern)
     .order("date", { ascending: false })
-    .limit(1000);
+    .limit(5000);
+  if (query.length >= 2) {
+    dbq = dbq.ilike("name", `%${query.replace(/[\\%_]/g, "\\$&")}%`);
+  }
+  const { data: txns, error } = await dbq;
   if (error) return { error: error.message, results: [] };
 
   const groups = new Map<
@@ -574,20 +591,17 @@ export async function searchRecurringMerchants(q: string): Promise<{
     groups.set(name, g);
   }
 
-  const top = [...groups.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 20);
+  const top = [...groups.entries()].sort((a, b) => b[1].count - a[1].count);
 
   const streamByName = new Map<string, string>();
-  if (top.length) {
-    const { data: streams } = await supabase
-      .from("recurring_streams")
-      .select("id, merchant_name")
-      .eq("space_id", space.id)
-      .neq("status", "dismissed")
-      .in("merchant_name", top.map(([name]) => name));
-    for (const s of streams ?? []) {
-      if (!streamByName.has(s.merchant_name as string)) {
-        streamByName.set(s.merchant_name as string, s.id as string);
-      }
+  const { data: streams } = await supabase
+    .from("recurring_streams")
+    .select("id, merchant_name")
+    .eq("space_id", space.id)
+    .neq("status", "dismissed");
+  for (const s of streams ?? []) {
+    if (!streamByName.has(s.merchant_name as string)) {
+      streamByName.set(s.merchant_name as string, s.id as string);
     }
   }
 

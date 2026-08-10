@@ -17,6 +17,46 @@ export interface RecurringDraft {
   currency: string;
   startDate: string;
   status?: "active" | "ended";
+  logoDomain?: string | null;
+}
+
+/** Merchant avatar: favicon from the stream's website, else a letter. */
+export function MerchantLogo({
+  name,
+  domain,
+  size = 34,
+}: {
+  name: string;
+  domain: string | null | undefined;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  const letter = (name.trim()[0] ?? "?").toUpperCase();
+  if (!domain || failed) {
+    return (
+      <span
+        style={{ width: size, height: size }}
+        className="flex shrink-0 items-center justify-center rounded-full bg-active text-[13px] font-semibold text-ink-soft"
+      >
+        {letter}
+      </span>
+    );
+  }
+  return (
+    <span
+      style={{ width: size, height: size }}
+      className="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-active"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`}
+        alt=""
+        width={size - 10}
+        height={size - 10}
+        onError={() => setFailed(true)}
+      />
+    </span>
+  );
 }
 
 const labelCls = "mb-1 block text-[12px] font-medium text-muted";
@@ -41,6 +81,7 @@ export function RecurringModal({
   const [startDate, setStartDate] = useState(initial.startDate);
   const [amount, setAmount] = useState(initial.amount ? String(initial.amount) : "");
   const [status, setStatus] = useState<"active" | "ended">(initial.status ?? "active");
+  const [logoDomain, setLogoDomain] = useState(initial.logoDomain ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -77,6 +118,7 @@ export function RecurringModal({
           currency: initial.currency,
           startDate,
           status: isRecurring ? status : "ended",
+          logoDomain: logoDomain.trim() || null,
         }),
       );
       if (res.error) {
@@ -108,15 +150,32 @@ export function RecurringModal({
         </div>
 
         <div className="flex flex-col gap-4 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <MerchantLogo name={name} domain={logoDomain.trim() || null} size={40} />
+            <div className="min-w-0 flex-1">
+              <label className={labelCls}>Merchant name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={!!initial.streamId}
+                dir="auto"
+                className={cn(inputCls, initial.streamId && "opacity-60")}
+              />
+            </div>
+          </div>
+
           <div>
-            <label className={labelCls}>Merchant name</label>
+            <label className={labelCls}>Merchant website</label>
             <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={!!initial.streamId}
-              dir="auto"
-              className={cn(inputCls, initial.streamId && "opacity-60")}
+              value={logoDomain}
+              onChange={(e) => setLogoDomain(e.target.value)}
+              placeholder="spotify.com"
+              className={inputCls}
             />
+            <p className={hintCls}>
+              Used to pull the logo automatically. Banks don&rsquo;t send logos,
+              so this is the one field to fill by hand.
+            </p>
           </div>
 
           <div className="flex items-center justify-between gap-3">
