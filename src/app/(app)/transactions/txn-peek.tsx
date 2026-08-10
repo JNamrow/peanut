@@ -2,17 +2,31 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { X } from "lucide-react";
+import {
+  Circle,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  Paperclip,
+  Pencil,
+  Plus,
+  Repeat,
+  Tag,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonCls } from "@/components/ui";
 import { CategoryPicker } from "@/components/category-picker";
 import { fmtMoney, longDate } from "@/lib/format";
-import type { Category, Transaction } from "@/lib/types";
+import type { Category, Transaction, TransactionEvent } from "@/lib/types";
 import {
   RecurringModal,
   type RecurringDraft,
 } from "../recurring/recurring-modal";
 import {
+  getTransactionEvents,
   receiptUrl,
   removeReceipt,
   toggleTransactionHidden,
@@ -41,6 +55,34 @@ const METHOD_LABELS: Record<NonNullable<Transaction["payment_method"]>, string> 
   transfer: "Bank transfer",
   bank: "Bank",
 };
+
+const EVENT_ICONS: Record<string, LucideIcon> = {
+  created: Plus,
+  category: Tag,
+  hidden: EyeOff,
+  unhidden: Eye,
+  note: Pencil,
+  recurring: Repeat,
+  receipt_added: Paperclip,
+  receipt_removed: Paperclip,
+  renamed: Pencil,
+};
+
+/** "Aug 7, 2026 · 6:15 PM" */
+function eventTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const date = d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${date} · ${time}`;
+}
 
 function ActivityRow({
   label,
@@ -97,8 +139,19 @@ export function TxnPeek({
 
   const [recurOpen, setRecurOpen] = useState(false);
 
+  const [events, setEvents] = useState<TransactionEvent[] | null>(null);
+  const [, startEvents] = useTransition();
+  const [activityOpen, setActivityOpen] = useState(true);
+
   // Track external changes (e.g. the row's eye toggle) after a refresh.
   useEffect(() => setHidden(txn.hide_from_reports), [txn.hide_from_reports]);
+
+  useEffect(() => {
+    startEvents(async () => {
+      const res = await getTransactionEvents(txn.id);
+      setEvents(res.error ? [] : res.events);
+    });
+  }, [txn.id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -372,8 +425,61 @@ export function TxnPeek({
           )}
         </section>
 
+        <section className="border-b border-line px-5 py-4">
+          <button
+            type="button"
+            onClick={() => setActivityOpen((o) => !o)}
+            className="flex w-full cursor-pointer items-center gap-1.5 text-left"
+          >
+            {activityOpen ? (
+              <ChevronDown size={14} className="shrink-0 text-faint" />
+            ) : (
+              <ChevronRight size={14} className="shrink-0 text-faint" />
+            )}
+            <span className="text-[11px] font-medium uppercase tracking-wide text-faint">
+              {events?.length ?? 0} {events?.length === 1 ? "event" : "events"}
+            </span>
+          </button>
+          {activityOpen ? (
+            events === null ? (
+              <p className="mt-3 text-[12px] text-muted">Loading activity…</p>
+            ) : events.length === 0 ? (
+              <p className="mt-3 text-[12px] text-muted">No activity yet.</p>
+            ) : (
+              <div className="mt-3 flex flex-col">
+                {events.map((ev, i) => {
+                  const Icon = EVENT_ICONS[ev.kind] ?? Circle;
+                  const last = i === events.length - 1;
+                  return (
+                    <div
+                      key={ev.id}
+                      className={cn("relative flex gap-3", !last && "pb-4")}
+                    >
+                      {!last ? (
+                        <span className="absolute left-[12.5px] top-[26px] bottom-0 w-px bg-line" />
+                      ) : null}
+                      <div className="relative z-10 flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-active text-ink-soft">
+                        <Icon size={13} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] font-semibold" dir="auto">
+                          {ev.summary}
+                        </div>
+                        <div className="mt-0.5 text-[12px] text-muted">
+                          {eventTime(ev.createdAt)}
+                          {ev.actorName ? ` by ${ev.actorName}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : null}
+        </section>
+
         <section className="px-5 py-4">
-          <div className={sectionHeaderCls}>Activity</div>
+          <div className={sectionHeaderCls}>Details</div>
           <div className="flex flex-col gap-1.5 text-[12px] text-muted">
             <ActivityRow label="Source" value={txn.source} />
             <ActivityRow

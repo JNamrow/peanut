@@ -23,6 +23,7 @@ function toLite(s: StreamRow): StreamLite {
     startDate: s.start_date ?? null,
     categoryId: s.category_id ?? null,
     logoDomain: s.logo_domain ?? null,
+    logoUrl: s.logo_url ?? null,
   };
 }
 

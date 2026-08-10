@@ -158,7 +158,16 @@ export interface RecurringStream {
   start_date: string | null;
   category_id: string | null;
   logo_domain: string | null;
+  logo_url: string | null;
   created_at?: string;
+}
+
+export interface TransactionEvent {
+  id: string;
+  kind: string;
+  summary: string;
+  actorName: string | null;
+  createdAt: string;
 }
 
 export interface Holding {

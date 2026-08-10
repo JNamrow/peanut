@@ -25,7 +25,7 @@ import {
   inputCls,
 } from "@/components/ui";
 import { addMonths, fmtMoney, monthLabel, shortDate } from "@/lib/format";
-import { useDismiss } from "@/components/category-picker";
+import { CategoryPicker, useDismiss } from "@/components/category-picker";
 import {
   CADENCE_LABELS,
   type Cadence,
@@ -37,8 +37,11 @@ import {
   runRecurringDetection,
   searchRecurringMerchants,
   setRecurringStatus,
+  setTransactionCategory,
+  updateRecurringCategory,
 } from "../actions";
 import { MerchantLogo, RecurringModal, type RecurringDraft } from "./recurring-modal";
+import { MatchTxnModal } from "./match-txn-modal";
 
 export interface StreamLite {
   id: string;
@@ -53,6 +56,7 @@ export interface StreamLite {
   startDate: string | null;
   categoryId: string | null;
   logoDomain: string | null;
+  logoUrl: string | null;
 }
 
 export interface CardCycle {
@@ -127,11 +131,7 @@ export function RecurringUI({
     () => new Map(accounts.map((a) => [a.id, a.name])),
     [accounts],
   );
-  const catLabel = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of categories ?? []) m.set(c.id, `${c.icon ? `${c.icon} ` : ""}${c.name}`);
-    return m;
-  }, [categories]);
+  const cats = categories ?? [];
   const streamById = useMemo(
     () => new Map(streams.map((s) => [s.id, s])),
     [streams],
@@ -153,6 +153,7 @@ export function RecurringUI({
       startDate: s.startDate ?? localToday(),
       status: s.status === "ended" ? "ended" : "active",
       logoDomain: s.logoDomain,
+      logoUrl: s.logoUrl,
     });
   }
 
@@ -192,7 +193,7 @@ export function RecurringUI({
             data={data}
             cards={cards}
             accountName={accountName}
-            catLabel={catLabel}
+            categories={cats}
             onAdd={openAdd}
             onEdit={editByStreamId}
           />
@@ -221,7 +222,7 @@ function MonthlyView({
   data,
   cards,
   accountName,
-  catLabel,
+  categories,
   onAdd,
   onEdit,
 }: {
@@ -229,10 +230,13 @@ function MonthlyView({
   data: RecurringMonth;
   cards: CardCycle[];
   accountName: Map<string, string>;
-  catLabel: Map<string, string>;
+  categories: Category[];
   onAdd: (kind: "expense" | "income") => void;
   onEdit: (streamId: string) => void;
 }) {
+  const [matchTarget, setMatchTarget] = useState<{ streamId: string; name: string } | null>(
+    null,
+  );
   const prev = addMonths(`${month}-01`, -1).slice(0, 7);
   const next = addMonths(`${month}-01`, 1).slice(0, 7);
 
@@ -342,15 +346,17 @@ function MonthlyView({
             title="Upcoming"
             occurrences={data.upcoming}
             accountName={accountName}
-            catLabel={catLabel}
+            categories={categories}
             onEdit={onEdit}
+            onMarkPaid={(streamId, name) => setMatchTarget({ streamId, name })}
           />
           <OccurrenceSection
             title="Paid"
             occurrences={data.paid}
             accountName={accountName}
-            catLabel={catLabel}
+            categories={categories}
             onEdit={onEdit}
+            onMarkPaid={(streamId, name) => setMatchTarget({ streamId, name })}
           />
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
             <span className="text-[13px] font-semibold">Upcoming Total</span>
@@ -371,6 +377,13 @@ function MonthlyView({
           </div>
         </Card>
       )}
+      {matchTarget ? (
+        <MatchTxnModal
+          streamId={matchTarget.streamId}
+          defaultQuery={matchTarget.name}
+          onClose={() => setMatchTarget(null)}
+        />
+      ) : null}
     </>
   );
 }
@@ -441,14 +454,16 @@ function OccurrenceSection({
   title,
   occurrences,
   accountName,
-  catLabel,
+  categories,
   onEdit,
+  onMarkPaid,
 }: {
   title: string;
   occurrences: MonthOccurrence[];
   accountName: Map<string, string>;
-  catLabel: Map<string, string>;
+  categories: Category[];
   onEdit: (streamId: string) => void;
+  onMarkPaid: (streamId: string, name: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   return (
@@ -490,8 +505,9 @@ function OccurrenceSection({
                 key={`${o.streamId}-${o.date}-${o.txnId ?? "exp"}`}
                 o={o}
                 accountName={accountName}
-                catLabel={catLabel}
+                categories={categories}
                 onEdit={onEdit}
+                onMarkPaid={onMarkPaid}
               />
             ))}
           </div>
@@ -511,18 +527,20 @@ function relDays(daysUntil: number): string {
 function OccurrenceRow({
   o,
   accountName,
-  catLabel,
+  categories,
   onEdit,
+  onMarkPaid,
 }: {
   o: MonthOccurrence;
   accountName: Map<string, string>;
-  catLabel: Map<string, string>;
+  categories: Category[];
   onEdit: (streamId: string) => void;
+  onMarkPaid: (streamId: string, name: string) => void;
 }) {
   return (
     <div className={cn(gridCls, "py-2.5 hover:bg-hover")}>
       <div className="flex min-w-0 items-center gap-3">
-        <MerchantLogo name={o.name} domain={o.logoDomain} size={32} />
+        <MerchantLogo name={o.name} domain={o.logoDomain} logoUrl={o.logoUrl} size={32} />
         <div className="min-w-0">
           <div className="truncate text-[13.5px] font-medium" dir="auto">
             {o.name}
@@ -539,8 +557,8 @@ function OccurrenceRow({
       <div className="truncate text-[13px] text-ink-soft" dir="auto">
         {o.accountId ? (accountName.get(o.accountId) ?? "—") : "—"}
       </div>
-      <div className="truncate text-[13px] text-ink-soft" dir="auto">
-        {o.categoryId ? (catLabel.get(o.categoryId) ?? "—") : "—"}
+      <div className="min-w-0">
+        <CategoryCell o={o} categories={categories} />
       </div>
       <div className="flex items-center justify-end gap-1.5">
         {o.paid ? <Check size={13} className="shrink-0 text-pos" /> : null}
@@ -553,12 +571,43 @@ function OccurrenceRow({
           {fmtMoney(o.amount, o.currency)}
         </span>
       </div>
-      <RowMenu onEdit={() => onEdit(o.streamId)} />
+      <RowMenu
+        onEdit={() => onEdit(o.streamId)}
+        onMarkPaid={o.paid ? undefined : () => onMarkPaid(o.streamId, o.name)}
+      />
     </div>
   );
 }
 
-function RowMenu({ onEdit }: { onEdit: () => void }) {
+/** Editable category chip; writes the txn's category when paid, else the stream's. */
+function CategoryCell({ o, categories }: { o: MonthOccurrence; categories: Category[] }) {
+  const router = useRouter();
+  const [value, setValue] = useState(o.categoryId ?? "");
+  const [, startTransition] = useTransition();
+
+  useEffect(() => {
+    setValue(o.categoryId ?? "");
+  }, [o.categoryId]);
+
+  function onSelect(id: string) {
+    setValue(id);
+    startTransition(async () => {
+      if (o.txnId) await setTransactionCategory(o.txnId, id);
+      else await updateRecurringCategory(o.streamId, id);
+      router.refresh();
+    });
+  }
+
+  return <CategoryPicker categories={categories} value={value} onSelect={onSelect} />;
+}
+
+function RowMenu({
+  onEdit,
+  onMarkPaid,
+}: {
+  onEdit: () => void;
+  onMarkPaid?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   useDismiss(ref, open, () => setOpen(false));
@@ -587,6 +636,18 @@ function RowMenu({ onEdit }: { onEdit: () => void }) {
           >
             <Pencil size={13} /> Edit
           </button>
+          {onMarkPaid ? (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onMarkPaid();
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] hover:bg-hover"
+            >
+              <Check size={13} /> Mark as paid
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -699,7 +760,7 @@ function SectionLabel({ title, count }: { title: string; count: number }) {
 function StreamCell({ s }: { s: StreamLite }) {
   return (
     <div className="flex min-w-0 items-center gap-3">
-      <MerchantLogo name={s.merchantName} domain={s.logoDomain} size={32} />
+      <MerchantLogo name={s.merchantName} domain={s.logoDomain} logoUrl={s.logoUrl} size={32} />
       <div className="min-w-0">
         <div className="truncate text-[13.5px] font-medium" dir="auto">
           {s.merchantName}
@@ -808,7 +869,7 @@ function AddRecurringModal({
       merchantName: r.name,
       amount: r.typicalAmount,
       currency: r.currency,
-      kind: defaultKind,
+      kind: r.direction === "in" ? "income" : r.direction === "out" ? "expense" : defaultKind,
       startDate: r.lastDate,
       cadence: "monthly",
     });
@@ -884,8 +945,13 @@ function AddRecurringModal({
                     {shortDate(r.lastDate)}
                   </div>
                 </div>
-                <span className="tnum shrink-0 text-[13.5px] font-medium">
-                  {fmtMoney(r.typicalAmount, r.currency)}
+                <span
+                  className={cn(
+                    "tnum shrink-0 text-[13.5px] font-medium",
+                    r.direction === "in" ? "text-pos" : "text-neg",
+                  )}
+                >
+                  {(r.direction === "in" ? "+" : "−") + fmtMoney(r.typicalAmount, r.currency)}
                 </span>
               </button>
             ))

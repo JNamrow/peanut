@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,20 +18,34 @@ export interface RecurringDraft {
   startDate: string;
   status?: "active" | "ended";
   logoDomain?: string | null;
+  logoUrl?: string | null;
 }
 
-/** Merchant avatar: favicon from the stream's website, else a letter. */
+/** Merchant avatar: uploaded image, else favicon from the website, else a letter. */
 export function MerchantLogo({
   name,
   domain,
+  logoUrl,
   size = 34,
 }: {
   name: string;
   domain: string | null | undefined;
+  logoUrl?: string | null;
   size?: number;
 }) {
   const [failed, setFailed] = useState(false);
   const letter = (name.trim()[0] ?? "?").toUpperCase();
+  if (logoUrl) {
+    return (
+      <span
+        style={{ width: size, height: size }}
+        className="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-active"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={logoUrl} alt="" className="h-full w-full object-cover" />
+      </span>
+    );
+  }
   if (!domain || failed) {
     return (
       <span
@@ -82,8 +96,10 @@ export function RecurringModal({
   const [amount, setAmount] = useState(initial.amount ? String(initial.amount) : "");
   const [status, setStatus] = useState<"active" | "ended">(initial.status ?? "active");
   const [logoDomain, setLogoDomain] = useState(initial.logoDomain ?? "");
+  const [logoUrl, setLogoUrl] = useState<string | null>(initial.logoUrl ?? null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -92,6 +108,23 @@ export function RecurringModal({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file re-trigger onChange
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = typeof reader.result === "string" ? reader.result : "";
+      if (url.length > 300_000) {
+        setError("Image too large (max ~200KB)");
+        return;
+      }
+      setError(null);
+      setLogoUrl(url);
+    };
+    reader.readAsDataURL(file);
+  }
 
   function save() {
     const amt = Number(amount);
@@ -119,6 +152,7 @@ export function RecurringModal({
           startDate,
           status: isRecurring ? status : "ended",
           logoDomain: logoDomain.trim() || null,
+          logoUrl,
         }),
       );
       if (res.error) {
@@ -151,7 +185,28 @@ export function RecurringModal({
 
         <div className="flex flex-col gap-4 px-5 py-4">
           <div className="flex items-center gap-3">
-            <MerchantLogo name={name} domain={logoDomain.trim() || null} size={40} />
+            <div className="flex shrink-0 flex-col items-center gap-1.5">
+              <MerchantLogo
+                name={name}
+                domain={logoDomain.trim() || null}
+                logoUrl={logoUrl}
+                size={44}
+              />
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className={buttonCls("secondary", "sm")}
+              >
+                Upload image
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/png,image/jpeg"
+                onChange={onPickImage}
+                className="hidden"
+              />
+            </div>
             <div className="min-w-0 flex-1">
               <label className={labelCls}>Merchant name</label>
               <input

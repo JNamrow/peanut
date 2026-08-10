@@ -7,29 +7,78 @@ import { syncRiseup, markRiseupError } from "@/lib/sync/riseup";
 import { syncPlaid } from "@/lib/sync/plaid";
 import { detectRecurring, writeDailySnapshots } from "@/lib/sync/housekeeping";
 import { CADENCE_LABELS, occurrencesInMonth, type Cadence } from "@/lib/recurring";
-import type { AccountType } from "@/lib/types";
+import type { AccountType, TransactionEvent } from "@/lib/types";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+type Supa = Awaited<ReturnType<typeof getContext>>["supabase"];
+
+function actorNameFrom(
+  members: { user_id: string; display_name: string | null }[],
+  userId: string,
+): string | null {
+  return members.find((m) => m.user_id === userId)?.display_name ?? null;
+}
+
+/** Append a transaction-timeline event. Best-effort: never throws, never blocks. */
+async function logTxnEvent(
+  supabase: Supa,
+  spaceId: string,
+  actorName: string | null,
+  txnId: string,
+  kind: string,
+  summary: string,
+): Promise<void> {
+  try {
+    await supabase.from("transaction_events").insert({
+      space_id: spaceId,
+      transaction_id: txnId,
+      kind,
+      summary,
+      actor_name: actorName,
+    });
+  } catch {
+    // swallow — logging must never break the primary action
+  }
+}
+
 // ------------------------------------------------------------ transactions
 
 export async function setTransactionCategory(txnId: string, categoryId: string) {
-  const { supabase } = await getContext();
+  const { supabase, space, members, userId } = await getContext();
   await supabase
     .from("transactions")
     .update({ category_id: categoryId || null, categorized_by: "user" })
     .eq("id", txnId);
+  let summary = "Category cleared";
+  if (categoryId) {
+    const { data: cat } = await supabase
+      .from("categories")
+      .select("name")
+      .eq("id", categoryId)
+      .maybeSingle();
+    summary = `Category set to ${cat?.name ?? "category"}`;
+  }
+  await logTxnEvent(supabase, space.id, actorNameFrom(members, userId), txnId, "category", summary);
   revalidatePath("/transactions");
 }
 
 export async function toggleTransactionHidden(txnId: string, hidden: boolean) {
-  const { supabase } = await getContext();
+  const { supabase, space, members, userId } = await getContext();
   await supabase
     .from("transactions")
     .update({ hide_from_reports: hidden })
     .eq("id", txnId);
+  await logTxnEvent(
+    supabase,
+    space.id,
+    actorNameFrom(members, userId),
+    txnId,
+    "hidden",
+    hidden ? "Marked as hidden" : "Marked as visible",
+  );
   revalidatePath("/transactions");
 }
 
@@ -58,11 +107,19 @@ export async function addManualTransaction(formData: FormData) {
 }
 
 export async function updateTransactionNotes(txnId: string, notes: string) {
-  const { supabase } = await getContext();
+  const { supabase, space, members, userId } = await getContext();
   await supabase
     .from("transactions")
     .update({ notes: notes.trim() || null })
     .eq("id", txnId);
+  await logTxnEvent(
+    supabase,
+    space.id,
+    actorNameFrom(members, userId),
+    txnId,
+    "notes",
+    "Description updated",
+  );
   revalidatePath("/transactions");
 }
 
@@ -71,7 +128,7 @@ export async function uploadReceipt(
   txnId: string,
   formData: FormData,
 ): Promise<{ error: string | null }> {
-  const { supabase, space } = await getContext();
+  const { supabase, space, members, userId } = await getContext();
   const file = formData.get("file") as File | null;
   if (!file || file.size === 0) return { error: "No file chosen." };
   if (file.size > 10 * 1024 * 1024) return { error: "Max 10MB." };
@@ -98,6 +155,14 @@ export async function uploadReceipt(
     .from("transactions")
     .update({ attachments: [...(txn.attachments ?? []), path] })
     .eq("id", txnId);
+  await logTxnEvent(
+    supabase,
+    space.id,
+    actorNameFrom(members, userId),
+    txnId,
+    "receipt",
+    "Receipt added",
+  );
   revalidatePath("/transactions");
   return { error: null };
 }
@@ -114,7 +179,7 @@ export async function receiptUrl(path: string): Promise<string | null> {
 }
 
 export async function removeReceipt(txnId: string, path: string) {
-  const { supabase, space } = await getContext();
+  const { supabase, space, members, userId } = await getContext();
   if (!path.startsWith(`${space.id}/`)) return;
   const { data: txn } = await supabase
     .from("transactions")
@@ -128,6 +193,14 @@ export async function removeReceipt(txnId: string, path: string) {
     .from("transactions")
     .update({ attachments: (txn.attachments ?? []).filter((p: string) => p !== path) })
     .eq("id", txnId);
+  await logTxnEvent(
+    supabase,
+    space.id,
+    actorNameFrom(members, userId),
+    txnId,
+    "receipt",
+    "Receipt removed",
+  );
   revalidatePath("/transactions");
 }
 
@@ -136,7 +209,7 @@ export async function renameMerchant(
   newName: string,
   applyAll: boolean,
 ): Promise<{ error: string | null }> {
-  const { supabase, space } = await getContext();
+  const { supabase, space, members, userId } = await getContext();
   const name = newName.trim();
   if (!name) return { error: "Name is required" };
   const { data: txn } = await supabase
@@ -159,6 +232,14 @@ export async function renameMerchant(
       .eq("id", txnId);
     if (error) return { error: error.message };
   }
+  await logTxnEvent(
+    supabase,
+    space.id,
+    actorNameFrom(members, userId),
+    txnId,
+    "rename",
+    `Renamed to ${name}`,
+  );
   revalidatePath("/transactions");
   return { error: null };
 }
@@ -435,6 +516,164 @@ export async function setRecurringStatus(
   revalidatePath("/recurring");
 }
 
+export async function updateRecurringCategory(
+  streamId: string,
+  categoryId: string | null,
+): Promise<{ error: string | null }> {
+  const { supabase, space } = await getContext();
+  const { data: existing } = await supabase
+    .from("recurring_streams")
+    .select("id")
+    .eq("id", streamId)
+    .eq("space_id", space.id)
+    .maybeSingle();
+  if (!existing) return { error: "Recurring item not found." };
+  const { error } = await supabase
+    .from("recurring_streams")
+    .update({ category_id: categoryId })
+    .eq("id", streamId);
+  if (error) return { error: error.message };
+  revalidatePath("/recurring");
+  revalidatePath("/transactions");
+  return { error: null };
+}
+
+/** Link a transaction to a recurring stream (both must be in the caller's space). */
+export async function linkTransactionToStream(
+  streamId: string,
+  txnId: string,
+): Promise<{ error: string | null }> {
+  const { supabase, space, members, userId } = await getContext();
+  const { data: stream } = await supabase
+    .from("recurring_streams")
+    .select("id")
+    .eq("id", streamId)
+    .eq("space_id", space.id)
+    .maybeSingle();
+  if (!stream) return { error: "Recurring item not found." };
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("id", txnId)
+    .eq("space_id", space.id)
+    .maybeSingle();
+  if (!txn) return { error: "Transaction not found." };
+  const { error } = await supabase
+    .from("transactions")
+    .update({ recurring_stream_id: streamId })
+    .eq("id", txnId);
+  if (error) return { error: error.message };
+  await logTxnEvent(
+    supabase,
+    space.id,
+    actorNameFrom(members, userId),
+    txnId,
+    "recurring",
+    "Marked as recurring",
+  );
+  revalidatePath("/recurring");
+  revalidatePath("/transactions");
+  return { error: null };
+}
+
+/** Transaction timeline: real events oldest-first, with a synthetic "created" head. */
+export async function getTransactionEvents(
+  txnId: string,
+): Promise<{ error: string | null; events: TransactionEvent[] }> {
+  const { supabase, space } = await getContext();
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("created_at, source")
+    .eq("id", txnId)
+    .eq("space_id", space.id)
+    .maybeSingle();
+  if (!txn) return { error: "Transaction not found.", events: [] };
+  const { data: rows, error } = await supabase
+    .from("transaction_events")
+    .select("id, kind, summary, actor_name, created_at")
+    .eq("transaction_id", txnId)
+    .order("created_at", { ascending: true });
+  if (error) return { error: error.message, events: [] };
+  const events: TransactionEvent[] = [
+    {
+      id: `created-${txnId}`,
+      kind: "created",
+      summary: "Added to Peanut",
+      actorName: null,
+      createdAt: txn.created_at as string,
+    },
+    ...(rows ?? []).map((r) => ({
+      id: r.id as string,
+      kind: r.kind as string,
+      summary: r.summary as string,
+      actorName: (r.actor_name as string | null) ?? null,
+      createdAt: r.created_at as string,
+    })),
+  ];
+  return { error: null, events };
+}
+
+/** Candidate transactions to link to a recurring stream: recent 60, unlinked first. */
+export async function searchTransactionsForMatch(
+  payload: string,
+): Promise<{
+  error: string | null;
+  results: {
+    id: string;
+    name: string;
+    date: string;
+    amount: number;
+    currency: string;
+    accountName: string | null;
+  }[];
+}> {
+  const { supabase, space } = await getContext();
+  let data: { query?: string; streamId?: string };
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return { error: "Bad search data.", results: [] };
+  }
+  const query = (data.query ?? "").trim();
+
+  let dbq = supabase
+    .from("transactions")
+    .select("id, name, date, amount, currency, recurring_stream_id, accounts(name)")
+    .eq("space_id", space.id)
+    .order("date", { ascending: false })
+    .limit(60);
+  if (query.length >= 2) {
+    dbq = dbq.ilike("name", `%${query.replace(/[\\%_]/g, "\\$&")}%`);
+  }
+  const { data: rows, error } = await dbq;
+  if (error) return { error: error.message, results: [] };
+
+  const sorted = (rows ?? []).slice().sort((a, b) => {
+    const an = (a.recurring_stream_id as string | null) == null;
+    const bn = (b.recurring_stream_id as string | null) == null;
+    if (an !== bn) return an ? -1 : 1;
+    return (b.date as string).localeCompare(a.date as string);
+  });
+
+  return {
+    error: null,
+    results: sorted.map((r) => ({
+      id: r.id as string,
+      name: r.name as string,
+      date: r.date as string,
+      amount: Number(r.amount),
+      currency: r.currency as string,
+      accountName: accountNameOf(r.accounts),
+    })),
+  };
+}
+
+/** Supabase embeds a to-one relation as an object at runtime but types it as an array. */
+function accountNameOf(a: unknown): string | null {
+  const one = Array.isArray(a) ? a[0] : a;
+  return (one as { name?: string } | null)?.name ?? null;
+}
+
 /** First expected date on/after `from`, walking up to 24 months ahead. */
 function firstOccurrenceOnOrAfter(
   cadence: Cadence,
@@ -466,6 +705,7 @@ export async function upsertRecurringStream(
     status?: "active" | "ended";
     accountId?: string | null;
     logoDomain?: string | null;
+    logoUrl?: string | null;
   };
   try {
     data = JSON.parse(payload);
@@ -492,6 +732,20 @@ export async function upsertRecurringStream(
     .limit(1)
     .maybeSingle();
 
+  // Default the account to the merchant's most recent txn when not supplied.
+  let accountId = data.accountId ?? null;
+  if (!accountId) {
+    const { data: lastTxn } = await supabase
+      .from("transactions")
+      .select("account_id")
+      .eq("space_id", space.id)
+      .eq("name", merchantName)
+      .order("date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    accountId = (lastTxn?.account_id as string | null) ?? null;
+  }
+
   const row = {
     merchant_name: merchantName,
     cadence: data.cadence,
@@ -500,8 +754,9 @@ export async function upsertRecurringStream(
     currency: data.currency,
     start_date: data.startDate,
     status: data.status === "ended" ? "ended" : "active",
-    account_id: data.accountId ?? null,
+    account_id: accountId,
     logo_domain: data.logoDomain?.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || null,
+    logo_url: data.logoUrl?.trim() || null,
     category_id: (lastCat?.category_id as string | null) ?? null,
     next_expected_date: firstOccurrenceOnOrAfter(data.cadence, data.startDate, today()),
   };
@@ -553,6 +808,7 @@ export async function searchRecurringMerchants(q: string): Promise<{
     typicalAmount: number;
     currency: string;
     streamId: string | null;
+    direction: "in" | "out";
   }[];
 }> {
   // Empty q returns EVERY merchant — the modal loads the full list once
@@ -574,16 +830,23 @@ export async function searchRecurringMerchants(q: string): Promise<{
 
   const groups = new Map<
     string,
-    { count: number; lastDate: string; typicalAmount: number; currencies: Map<string, number> }
+    {
+      count: number;
+      lastDate: string;
+      typicalAmount: number;
+      direction: "in" | "out";
+      currencies: Map<string, number>;
+    }
   >();
   for (const t of txns ?? []) {
     const name = (t.name as string).trim();
     if (!name) continue;
-    // Rows arrive newest first, so the first row per name sets lastDate + amount.
+    // Rows arrive newest first, so the first row per name sets lastDate + amount + direction.
     const g = groups.get(name) ?? {
       count: 0,
       lastDate: t.date as string,
       typicalAmount: Math.abs(Number(t.amount)),
+      direction: Number(t.amount) > 0 ? ("in" as const) : ("out" as const),
       currencies: new Map<string, number>(),
     };
     g.count++;
@@ -614,6 +877,7 @@ export async function searchRecurringMerchants(q: string): Promise<{
       typicalAmount: g.typicalAmount,
       currency: [...g.currencies.entries()].sort((a, b) => b[1] - a[1])[0][0],
       streamId: streamByName.get(name) ?? null,
+      direction: g.direction,
     })),
   };
 }
