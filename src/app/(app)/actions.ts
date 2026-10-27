@@ -5,6 +5,12 @@ import { getContext } from "@/lib/data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { syncRiseup, markRiseupError } from "@/lib/sync/riseup";
 import { syncPlaid } from "@/lib/sync/plaid";
+import {
+  syncFinancy,
+  markFinancyError,
+  describeFinancyError,
+  refreshFinancy,
+} from "@/lib/sync/financy";
 import { detectRecurring, writeDailySnapshots } from "@/lib/sync/housekeeping";
 import { CADENCE_LABELS, occurrencesInMonth, type Cadence } from "@/lib/recurring";
 import type { AccountType, TransactionEvent } from "@/lib/types";
@@ -469,6 +475,133 @@ export async function renewRiseupToken(
 
 // -------------------------------------------------------------------- sync
 
+// ------------------------------------------------------------ financy
+
+function financyCredentialsFrom(formData: FormData) {
+  const clientId = String(formData.get("client_id") ?? "").trim();
+  const clientSecret = String(formData.get("client_secret") ?? "").trim();
+  const userId = String(formData.get("user_id") ?? "").trim();
+  if (!clientId || !clientSecret || !userId) return null;
+  return { clientId, clientSecret, userId };
+}
+
+/** Financy keeps the bank links; Peanut keeps the three API credentials. */
+export async function connectFinancy(formData: FormData): Promise<ActionResult> {
+  const { supabase, space, userId } = await getContext();
+  const creds = financyCredentialsFrom(formData);
+  if (!creds) {
+    return {
+      error:
+        "Paste all three values from Financy → Settings → API access: client id, client secret and user id.",
+    };
+  }
+  const { data: conn, error } = await supabase
+    .from("connections")
+    .insert({
+      space_id: space.id,
+      provider: "financy",
+      label: String(formData.get("label") || "Financy") || "Financy",
+      institution_name: "Financy",
+      status: "pending",
+      created_by: userId,
+      config: {
+        financy_client_id: creds.clientId,
+        financy_user_id: creds.userId,
+        credentials_updated_at: new Date().toISOString(),
+      },
+    })
+    .select("id")
+    .single();
+  if (error) return { error: `Could not save the connection: ${error.message}` };
+
+  const admin = createAdminClient();
+  const { error: vaultErr } = await admin.rpc("peanut_vault_set_secret", {
+    p_name: `conn_${conn.id}`,
+    p_secret: JSON.stringify(creds),
+  });
+  if (vaultErr) {
+    await supabase.from("connections").delete().eq("id", conn.id);
+    return { error: `Could not store the credentials: ${vaultErr.message}` };
+  }
+
+  try {
+    await syncFinancy(conn.id, { backfillMonths: 12 });
+  } catch (e) {
+    const friendly = describeFinancyError(e);
+    await markFinancyError(conn.id, friendly);
+    // Keep the connection: fixing the plan or the bank link in Financy is enough.
+    return { error: friendly };
+  }
+  await writeDailySnapshots();
+  revalidatePath("/accounts");
+  revalidatePath("/transactions");
+  return { error: null };
+}
+
+export async function updateFinancyCredentials(
+  connectionId: string,
+  formData: FormData,
+): Promise<ActionResult> {
+  const { supabase } = await getContext();
+  const creds = financyCredentialsFrom(formData);
+  if (!creds) {
+    return { error: "All three values are needed: client id, client secret and user id." };
+  }
+  // RLS check: the user must be able to see this connection.
+  const { data: conn } = await supabase
+    .from("connections")
+    .select("id, config")
+    .eq("id", connectionId)
+    .single();
+  if (!conn) return { error: "Connection not found" };
+  const admin = createAdminClient();
+  await admin.rpc("peanut_vault_set_secret", {
+    p_name: `conn_${connectionId}`,
+    p_secret: JSON.stringify(creds),
+  });
+  await admin
+    .from("connections")
+    .update({
+      status: "active",
+      error: null,
+      config: {
+        ...(conn.config as Record<string, unknown>),
+        financy_client_id: creds.clientId,
+        financy_user_id: creds.userId,
+        credentials_updated_at: new Date().toISOString(),
+      },
+    })
+    .eq("id", connectionId);
+  try {
+    await syncFinancy(connectionId);
+  } catch (e) {
+    const friendly = describeFinancyError(e);
+    await markFinancyError(connectionId, friendly);
+    return { error: friendly };
+  }
+  revalidatePath("/settings");
+  return { error: null };
+}
+
+/** Ask Financy for a fresh bank pull. Financy charges 20 of its credits. */
+export async function refreshFinancyNow(
+  connectionId: string,
+): Promise<{ error: string | null; message?: string }> {
+  const { supabase } = await getContext();
+  const { data: conn } = await supabase
+    .from("connections")
+    .select("id, provider")
+    .eq("id", connectionId)
+    .single();
+  if (!conn || conn.provider !== "financy") return { error: "Connection not found" };
+  try {
+    const result = await refreshFinancy(connectionId);
+    return { error: null, message: result.message };
+  } catch (e) {
+    return { error: describeFinancyError(e) };
+  }
+}
+
 export async function syncConnectionNow(connectionId: string) {
   const { supabase } = await getContext();
   const { data: conn } = await supabase
@@ -480,9 +613,15 @@ export async function syncConnectionNow(connectionId: string) {
   try {
     if (conn.provider === "riseup") await syncRiseup(connectionId);
     if (conn.provider === "plaid") await syncPlaid(connectionId);
+    if (conn.provider === "financy") await syncFinancy(connectionId);
   } catch (e) {
     if (conn.provider === "riseup") {
       await markRiseupError(connectionId, e instanceof Error ? e.message : "failed");
+    }
+    if (conn.provider === "financy") {
+      const friendly = describeFinancyError(e);
+      await markFinancyError(connectionId, friendly);
+      throw new Error(friendly);
     }
     throw e;
   }

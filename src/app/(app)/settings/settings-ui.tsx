@@ -3,22 +3,58 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { buttonCls, inputCls } from "@/components/ui";
-import { deleteConnection, renewRiseupToken, syncConnectionNow } from "../actions";
+import {
+  deleteConnection,
+  refreshFinancyNow,
+  renewRiseupToken,
+  syncConnectionNow,
+  updateFinancyCredentials,
+} from "../actions";
 import type { Connection } from "@/lib/types";
 import { RefreshCw, Trash2 } from "lucide-react";
+
+/** What the Financy sync records about each bank linked inside Financy. */
+interface FinancyBank {
+  institution: string;
+  status: string;
+  expires: string | null;
+}
 
 export function ConnectionRow({ connection: c }: { connection: Connection }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [renewOpen, setRenewOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
+  const isRiseup = c.provider === "riseup";
+  const isFinancy = c.provider === "financy";
+
+  // Read the clock once per mount: the lint rule for render purity is right
+  // that Date.now() in render is a side effect, and a day's precision is plenty.
+  const [now] = useState(() => Date.now());
   const tokenAge = (() => {
     const created = (c.config as { token_created_at?: string })?.token_created_at;
-    if (!created || c.provider !== "riseup") return null;
-    return Math.floor((Date.now() - new Date(created).getTime()) / 86400000);
+    if (!created || !isRiseup) return null;
+    return Math.floor((now - new Date(created).getTime()) / 86400000);
   })();
   const tokenWarning = tokenAge != null && tokenAge >= 25;
+
+  const banks = isFinancy
+    ? ((c.config as { financy_banks?: FinancyBank[] })?.financy_banks ?? [])
+    : [];
+
+  function run(fn: () => Promise<void>) {
+    startTransition(async () => {
+      setError(null);
+      setNote(null);
+      try {
+        await fn();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed");
+      }
+    });
+  }
 
   return (
     <div className="border-b border-line py-2.5 last:border-0">
@@ -44,28 +80,67 @@ export function ConnectionRow({ connection: c }: { connection: Connection }) {
               </span>
             ) : null}
           </div>
+          {banks.length ? (
+            <div className="text-[12px] text-muted">
+              {banks.map((b, i) => (
+                <span key={`${b.institution}-${i}`}>
+                  {i > 0 ? " · " : ""}
+                  {b.institution}{" "}
+                  <span className={/ACTIVE|CONNECTED|COMPLETED/.test(b.status) ? "" : "text-neg"}>
+                    {b.status.toLowerCase().replace(/_/g, " ")}
+                  </span>
+                  {b.expires ? ` (consent to ${b.expires})` : ""}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-1.5">
-          {c.provider === "riseup" ? (
+          {isRiseup ? (
             <button
               className={buttonCls("secondary", "sm")}
-              onClick={() => setRenewOpen((v) => !v)}
+              onClick={() => setEditOpen((v) => !v)}
             >
               Renew token
             </button>
+          ) : null}
+          {isFinancy ? (
+            <>
+              <button
+                className={buttonCls("secondary", "sm")}
+                onClick={() => setEditOpen((v) => !v)}
+              >
+                Update credentials
+              </button>
+              <button
+                className={buttonCls("secondary", "sm")}
+                disabled={pending}
+                title="Ask Financy to pull fresh data from your banks now. Financy charges 20 of its credits."
+                onClick={() => {
+                  if (
+                    !confirm(
+                      "Ask Financy to refresh your banks now? Financy charges 20 credits for this. The scheduled daily refresh is free.",
+                    )
+                  )
+                    return;
+                  run(async () => {
+                    const result = await refreshFinancyNow(c.id);
+                    if (result.error) setError(result.error);
+                    else setNote(result.message ?? "Refresh requested.");
+                  });
+                }}
+              >
+                Refresh at Financy
+              </button>
+            </>
           ) : null}
           <button
             className={buttonCls("secondary", "sm")}
             disabled={pending}
             onClick={() =>
-              startTransition(async () => {
-                setError(null);
-                try {
-                  await syncConnectionNow(c.id);
-                  router.refresh();
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : "Sync failed");
-                }
+              run(async () => {
+                await syncConnectionNow(c.id);
+                router.refresh();
               })
             }
           >
@@ -76,7 +151,7 @@ export function ConnectionRow({ connection: c }: { connection: Connection }) {
             disabled={pending}
             onClick={() => {
               if (!confirm("Delete this connection? Its accounts stay, syncing stops.")) return;
-              startTransition(async () => {
+              run(async () => {
                 await deleteConnection(c.id);
                 router.refresh();
               });
@@ -87,23 +162,52 @@ export function ConnectionRow({ connection: c }: { connection: Connection }) {
         </div>
       </div>
       {error ? <p className="mt-1 text-[12.5px] text-neg">{error}</p> : null}
-      {renewOpen ? (
+      {note ? <p className="mt-1 text-[12.5px] text-ink-soft">{note}</p> : null}
+      {editOpen && isRiseup ? (
         <form
           action={(fd) =>
-            startTransition(async () => {
-              setError(null);
+            run(async () => {
               const result = await renewRiseupToken(c.id, fd);
               if (result.error) {
                 setError(result.error);
                 return;
               }
-              setRenewOpen(false);
+              setEditOpen(false);
               router.refresh();
             })
           }
           className="mt-2 flex gap-2"
         >
           <input name="token" className={inputCls} placeholder="riseup_pat_… (new token)" />
+          <button className={buttonCls("primary", "sm")} disabled={pending}>
+            Save
+          </button>
+        </form>
+      ) : null}
+      {editOpen && isFinancy ? (
+        <form
+          action={(fd) =>
+            run(async () => {
+              const result = await updateFinancyCredentials(c.id, fd);
+              if (result.error) {
+                setError(result.error);
+                return;
+              }
+              setEditOpen(false);
+              router.refresh();
+            })
+          }
+          className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]"
+        >
+          <input name="client_id" className={inputCls} placeholder="Client id" autoComplete="off" />
+          <input
+            name="client_secret"
+            type="password"
+            className={inputCls}
+            placeholder="Client secret"
+            autoComplete="off"
+          />
+          <input name="user_id" className={inputCls} placeholder="User id" autoComplete="off" />
           <button className={buttonCls("primary", "sm")} disabled={pending}>
             Save
           </button>

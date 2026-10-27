@@ -58,7 +58,7 @@ const CC_BILL_PATTERNS = [
   "ויזה כאל",
 ];
 
-function isCardBillDebit(name: string | null, isChecking: boolean): boolean {
+export function isCardBillDebit(name: string | null, isChecking: boolean): boolean {
   if (!name || !isChecking) return false;
   return CC_BILL_PATTERNS.some((p) => name.includes(p));
 }
