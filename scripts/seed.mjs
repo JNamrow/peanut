@@ -8,17 +8,33 @@ const env = Object.fromEntries(
   readFileSync(new URL("../.env.local", import.meta.url), "utf8")
     .split("\n")
     .filter((l) => l.includes("="))
-    .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    .filter((l) => !l.trim().startsWith("#"))
+    .map((l) => [
+      l.slice(0, l.indexOf("=")).trim(),
+      l.slice(l.indexOf("=") + 1).trim().replace(/^(["'])(.*)\1$/, "$2"),
+    ]),
 );
 
 const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-const USERS = [
-  { email: "you@example.com", name: "You", role: "owner" },
-  { email: "partner@example.com", name: "Partner", role: "owner" },
-];
+// Seed users come from .env.local, e.g. SEED_USERS=you@example.com:You,partner@example.com:Partner
+// Every listed user becomes an owner of one shared space (SEED_SPACE_NAME, SEED_PRIMARY_CURRENCY).
+const USERS = (env.SEED_USERS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((pair) => {
+    const [email, name] = pair.split(":").map((s) => s.trim());
+    return { email, name: name || email.split("@")[0], role: "owner" };
+  });
+if (USERS.length === 0) {
+  console.error("Set SEED_USERS in .env.local, e.g. SEED_USERS=you@example.com:You,partner@example.com:Partner");
+  process.exit(1);
+}
+const SPACE_NAME = env.SEED_SPACE_NAME || "Household";
+const PRIMARY_CURRENCY = env.SEED_PRIMARY_CURRENCY || "ILS";
 
 // Monarch's default taxonomy + Israel additions. [group, name, icon, kind, bucket]
 const CATEGORIES = [
@@ -128,12 +144,12 @@ async function main() {
   let { data: space } = await admin
     .from("spaces")
     .select("id")
-    .eq("name", "Household")
+    .eq("name", SPACE_NAME)
     .maybeSingle();
   if (!space) {
     const { data, error } = await admin
       .from("spaces")
-      .insert({ name: "Household", primary_currency: "ILS" })
+      .insert({ name: SPACE_NAME, primary_currency: PRIMARY_CURRENCY })
       .select("id")
       .single();
     if (error) throw error;

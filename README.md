@@ -1,23 +1,57 @@
 # Peanut 🥜
 
-Household finance for two countries. Monarch-style app that holds dollars
-and shekels side by side — every amount is stored in its own currency and
-converted at the day's rate only for display.
+Household finance for people whose money lives in two countries.
+
+Peanut is a Monarch-style personal finance app that holds dollars and shekels
+side by side. Every amount is stored in its own currency and converted at the
+day's rate only for display, so a US paycheck and an Israeli grocery run sit in
+the same budget without either one being "the foreign one".
+
+It is a personal project its author uses every day. It is free and open source
+(MIT) and built to be self-hosted on a free Supabase project plus Vercel.
+
+## What it does
+
+- Accounts, transactions, categories and budgets in the Monarch mould, with
+  Israel-specific categories (Arnona, Va'ad Bayit, Tzedakah) added
+- US banks, cards and brokerage accounts via Plaid; Israeli accounts via
+  RiseUp's official API
+- Israeli pension and hishtalmut tracks rolled forward from the published
+  monthly yields on data.gov.il
+- Daily USD/ILS rates from the ECB, backfilled to 2019
+- Transfers are a category kind, so moving money between your own accounts
+  never counts as spending
+- Nightly sync on Vercel Cron: FX → RiseUp → Plaid → pensions → balance snapshots
 
 ## Stack
 
 - Next.js 16 (App Router) + Tailwind v4
-- Supabase (Postgres, Auth, Vault) — project `your-project-ref` (separate from fcfo-hub)
+- Supabase (Postgres, Auth, Vault)
 - Recharts
 
 ## Data sources
 
 | Source | What | How |
 |---|---|---|
-| Plaid | US banks, cards, Robinhood (txns, balances, holdings) | `/transactions/sync` + `/investments/holdings/get`, access tokens in Supabase Vault |
+| Plaid | US banks, cards, brokerage (txns, balances, holdings) | `/transactions/sync` + `/investments/holdings/get`, access tokens in Supabase Vault |
 | RiseUp | Israeli accounts: transactions with RiseUp's Hebrew categories | Official PAT API (`input.riseup.co.il/api/external`), token expires every 30 days — UI warns at day 25. No balances endpoint yet (balances stay manual until RiseUp ships it) |
-| data.gov.il | Pension/hishtalmut track yields (Gemelnet/Pensianet) | "Anchor + drift": statement balance rolled forward by published monthly yield minus fee, plus deposit |
+| data.gov.il | Pension/hishtalmut track yields (Gemelnet/Pensianet) | "Anchor + drift": statement balance rolled forward by published monthly yield minus fee, plus deposits |
 | frankfurter.dev | Daily USD/ILS (ECB) | `fx_rates` table, backfilled to 2019 |
+
+## Self-host
+
+1. Create a Supabase project and apply the schema in `supabase/migrations`
+   (`supabase link` then `supabase db push`, or paste the SQL into the SQL editor).
+2. Copy `.env.example` to `.env.local` and fill it in. Plaid needs a client id
+   and secret for the environment you pick; `CRON_SECRET` is any long random string.
+3. `pnpm install` then `pnpm dev`.
+4. Seed once per fresh database: set `SEED_USERS` (and optionally
+   `SEED_SPACE_NAME`, `SEED_PRIMARY_CURRENCY`) in `.env.local`, then run
+   `node scripts/seed.mjs`. It creates the users, the shared space, Monarch-style
+   categories plus the Israeli ones, Plaid category aliases and FX history, and
+   prints a first password for each new user.
+5. Deploy to Vercel with the same env vars. `vercel.json` schedules the daily
+   sync at 03:00 UTC; Vercel calls it with `Authorization: Bearer $CRON_SECRET`.
 
 ## Conventions
 
@@ -29,20 +63,18 @@ converted at the day's rate only for display.
 - Every provider row keys on `(connection_id, external_id)` with upserts — re-syncs are idempotent.
 - Secrets (Plaid access tokens, RiseUp PATs) live in Supabase Vault via `peanut_vault_*` RPCs (service-role only).
 
-## Run
-
-```bash
-pnpm install
-cp .env.example .env.local   # fill in
-pnpm dev
-```
-
-Seed (once per fresh database): `node scripts/seed.mjs` — creates users, the
-shared space, Monarch-style categories (+ Israeli ones), Plaid category
-aliases, and FX history.
-
 ## Sync
 
 - Manual: Settings → Sync, or automatically after connecting.
 - Scheduled: Vercel Cron hits `GET /api/cron/daily` at 03:00 UTC with
   `Authorization: Bearer $CRON_SECRET` (fx → riseup → plaid → pensions → snapshots).
+
+## Status
+
+Peanut is built for one household at a time: one Supabase project per
+household, every listed user an owner. It has not been reviewed for hosting
+strangers' data on a shared instance, and there is no hosted version.
+
+## License
+
+MIT. See `LICENSE`.
