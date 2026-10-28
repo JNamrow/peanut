@@ -463,7 +463,7 @@ interface AccountDef {
 
 const ACCOUNT_DEFS: readonly AccountDef[] = [
   { key: "leumiChecking", name: "Leumi Checking", official: "חשבון עו\"ש", institution: "Bank Leumi", type: "checking", subtype: "checking", currency: "ILS", mask: "4471", source: "riseup", liability: false, owner: DEMO_USER_ID, target: 38000, daily: true },
-  { key: "leumiSavings", name: "Leumi Savings", official: "פיקדון שקלי", institution: "Bank Leumi", type: "savings", subtype: "savings", currency: "ILS", mask: "4489", source: "manual", liability: false, owner: DEMO_USER_ID, target: 95000, daily: true },
+  { key: "leumiSavings", name: "Leumi Savings", official: "פיקדון שקלי", institution: "Bank Leumi", type: "savings", subtype: "savings", currency: "ILS", mask: "4489", source: "manual", liability: false, owner: DEMO_USER_ID, target: 250000, daily: true },
   { key: "maxCard", name: "Max Visa", official: "MAX VISA", institution: "Max", type: "credit", subtype: "credit card", currency: "ILS", mask: "8821", source: "riseup", liability: true, owner: DEMO_USER_ID, paysFrom: "leumiChecking", creditLimit: 30000, target: -6400, daily: true },
   { key: "isracard", name: "Isracard Mastercard", official: "ISRACARD MASTERCARD", institution: "Isracard", type: "credit", subtype: "credit card", currency: "ILS", mask: "3307", source: "riseup", liability: true, owner: DEMO_PARTNER_ID, paysFrom: "leumiChecking", creditLimit: 20000, target: -2100, daily: true },
   { key: "menoraPension", name: "Menora Mivtachim Pension", official: "קרן פנסיה מקיפה", institution: "Menorah Mivtachim", type: "pension", subtype: "pension", currency: "ILS", mask: "0192", source: "manual", liability: false, owner: DEMO_USER_ID, target: 212000, daily: false },
@@ -553,7 +553,7 @@ const STREAM_DEFS: readonly StreamDef[] = [
   stream({ key: "maccabi", name: "מכבי שירותי בריאות", account: "leumiChecking", category: "Kupat Cholim", day: 11, amount: 296, logo: "maccabi4u.co.il" }),
   stream({ key: "harel", name: "הראל ביטוח", account: "leumiChecking", category: "Insurance", day: 6, amount: 320, logo: "harel-group.co.il" }),
   stream({ key: "carLoan", name: "Leumi Car Loan", account: "leumiChecking", category: "Auto Payment", day: 20, amount: 1150, logo: "leumi.co.il" }),
-  stream({ key: "mayaSalary", name: "Lumio Tech Ltd Salary", account: "leumiChecking", category: "Paychecks", day: 10, amount: 21000, jitter: 0.012, kind: "income" }),
+  stream({ key: "mayaSalary", name: "Lumio Tech Ltd Salary", account: "leumiChecking", category: "Paychecks", day: 10, amount: 34000, jitter: 0.012, kind: "income" }),
   stream({ key: "electric", name: "חברת החשמל", account: "leumiChecking", category: "Gas & Electric", cadence: "every_2_months", day: 18, amount: 740, jitter: 0.3, parity: 1, listed: false }),
   stream({ key: "water", name: "מי אביבים", account: "leumiChecking", category: "Water", cadence: "every_2_months", day: 22, amount: 245, jitter: 0.25, parity: 1, listed: false }),
   stream({ key: "latet", name: "לתת", account: "leumiChecking", category: "Tzedakah & Charity", day: 4, amount: 250, listed: false }),
@@ -716,7 +716,7 @@ const BILL_DEFS: readonly { card: AccountKey; day: number; bankName: string; car
 ];
 
 const BUDGET_ILS: readonly (readonly [string, number])[] = [
-  ["Paychecks", 21000], ["Groceries", 3200], ["Restaurants & Bars", 1400], ["Coffee Shops", 350], ["Gas", 900],
+  ["Paychecks", 34000], ["Groceries", 3200], ["Restaurants & Bars", 1400], ["Coffee Shops", 350], ["Gas", 900],
   ["Rent", 6200], ["Arnona", 700], ["Va'ad Bayit", 350], ["Gas & Electric", 400], ["Phone", 120],
   ["Kupat Cholim", 300], ["Fitness", 300], ["Public Transit", 250], ["Shopping", 600], ["Clothing", 600],
   ["Personal", 450], ["Entertainment & Recreation", 300], ["Insurance", 350], ["Auto Payment", 1150],
@@ -1042,11 +1042,11 @@ function contribute(seed: Seed, to: AccountKey, date: string, amount: number, sy
 
 function generateSavingsAndRetirement(seed: Seed): void {
   for (const mo of seed.months) {
-    // The day after Maya's salary, ₪1,500 goes to the pikadon.
+    // The day after Maya's salary, ₪8,000 goes to the pikadon.
     const savingsDate = clampDay(mo, 11);
     if (savingsDate <= seed.today) {
-      const out = addTxn(seed, { account: "leumiChecking", date: savingsDate, name: "Transfer to Leumi Savings", amount: -1500, category: "Transfer", transfer: true });
-      const inn = addTxn(seed, { account: "leumiSavings", date: savingsDate, name: "Transfer from Leumi Checking", amount: 1500, category: "Transfer", transfer: true });
+      const out = addTxn(seed, { account: "leumiChecking", date: savingsDate, name: "Transfer to Leumi Savings", amount: -8000, category: "Transfer", transfer: true });
+      const inn = addTxn(seed, { account: "leumiSavings", date: savingsDate, name: "Transfer from Leumi Checking", amount: 8000, category: "Transfer", transfer: true });
       pairTransfer(out, inn);
     }
     // $700 a month into Fidelity, and a twelfth of the Roth limit into Vanguard.
@@ -1084,7 +1084,8 @@ function generateWise(seed: Seed): void {
     if (date > seed.today) break;
     const rate = usdIls(seed, date) * (1 - WISE_FEE);
     const wanted = (shortfall + 100 * seed.rng.int(-3, 3) * rate) / rate;
-    const usd = Math.min(5200, Math.max(3000, 100 * Math.round(wanted / 100)));
+    const usd = Math.min(5200, Math.max(0, 100 * Math.round(wanted / 100)));
+    if (usd < 500) continue; // the shekel side covered itself this month
     const ils = round2(usd * rate);
     const out = addTxn(seed, { account: "chaseChecking", date, name: "Wise Transfer", amount: -usd, category: "Transfer", transfer: true });
     const inn = addTxn(seed, { account: "leumiChecking", date, name: "Wise", amount: ils, category: "Transfer", transfer: true });
@@ -1413,7 +1414,7 @@ function buildGoals(seed: Seed, snapshots: BalanceSnapshotRow[]): { goals: GoalR
   const springYear = seed.now.getMonth() < 3 ? y : y + 1;
   const monthsOut = (n: number) => dateOf(y, seed.now.getMonth() + n, 1);
   const goals: GoalRow[] = [
-    { id: uuidFromKey("goal:emergency"), space_id: DEMO_SPACE_ID, name: "Emergency fund", icon: "🛟", kind: "save_up", target_amount: 120000, currency: "ILS", target_date: monthsOut(18), starting_amount: 0, planned_monthly: 1500, status: "active", display_order: 0, created_at: seed.startIso },
+    { id: uuidFromKey("goal:emergency"), space_id: DEMO_SPACE_ID, name: "Emergency fund", icon: "🛟", kind: "save_up", target_amount: 300000, currency: "ILS", target_date: monthsOut(18), starting_amount: 0, planned_monthly: 8000, status: "active", display_order: 0, created_at: seed.startIso },
     { id: uuidFromKey("goal:japan"), space_id: DEMO_SPACE_ID, name: "Japan trip", icon: "🗾", kind: "save_up", target_amount: 6000, currency: "USD", target_date: `${springYear}-04-15`, starting_amount: 2250, planned_monthly: 500, status: "active", display_order: 1, created_at: isoAt(monthsOut(-4), 9, 0) },
     { id: uuidFromKey("goal:car-loan"), space_id: DEMO_SPACE_ID, name: "Pay off the car loan", icon: "🚗", kind: "pay_down", target_amount: Math.round(openingDebt), currency: "ILS", target_date: monthsOut(48), starting_amount: Math.round(openingDebt), planned_monthly: 1150, status: "active", display_order: 2, created_at: seed.startIso },
   ];
@@ -1548,7 +1549,7 @@ function buildDemoDataRaw(now: Date = new Date()): DemoData {
       },
     ],
     forecast_incomes: [
-      { id: uuidFromKey("income:maya"), space_id: DEMO_SPACE_ID, member_user_id: DEMO_USER_ID, name: "Maya - Lumio Tech", icon: "💼", yearly_amount: 252000, currency: "ILS", stops_at_retirement: true, created_at: seed.startIso, excluded: false },
+      { id: uuidFromKey("income:maya"), space_id: DEMO_SPACE_ID, member_user_id: DEMO_USER_ID, name: "Maya - Lumio Tech", icon: "💼", yearly_amount: 408000, currency: "ILS", stops_at_retirement: true, created_at: seed.startIso, excluded: false },
       { id: uuidFromKey("income:tom"), space_id: DEMO_SPACE_ID, member_user_id: DEMO_PARTNER_ID, name: "Tom - Northwind Labs", icon: "🧑‍💻", yearly_amount: 115200, currency: "USD", stops_at_retirement: true, created_at: seed.startIso, excluded: false },
     ],
     forecast_events: [
