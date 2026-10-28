@@ -1,13 +1,12 @@
 # Peanut 🥜
 
-Household finance for people whose money lives in two countries.
+Household finance for people whose money lives in multiple countries and currencies.
 
 Peanut is a Monarch-style personal finance app that holds dollars and shekels
 side by side. Every amount is stored in its own currency and converted at the
-day's rate only for display, so a US paycheck and an Israeli grocery run sit in
-the same budget without either one being "the foreign one".
+day's rate only for display.
 
-It is a personal project its author uses every day. It is free and open source
+It is a personal project I use every day. It is free and open source
 (MIT) and built to be self-hosted on a free Supabase project plus Vercel.
 
 ## What it does
