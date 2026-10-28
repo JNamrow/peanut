@@ -16,17 +16,6 @@ end $$;
 
 -- ---------------------------------------------------------------- helpers
 
-create or replace function public.is_space_member(p_space uuid)
-returns boolean
-language sql stable security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.space_members
-    where space_id = p_space and user_id = auth.uid()
-  );
-$$;
-
 create or replace function public.touch_updated_at()
 returns trigger
 language plpgsql
@@ -374,6 +363,20 @@ create table public.forecast_splits (
 
 -- ---------------------------------------------------------------- row level security
 -- Everything is scoped to the household ("space") a user belongs to.
+
+-- SQL-language functions are checked against existing tables when created, so this
+-- one comes after the tables it reads.
+create or replace function public.is_space_member(p_space uuid)
+returns boolean
+language sql stable security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.space_members
+    where space_id = p_space and user_id = auth.uid()
+  );
+$$;
+
 
 alter table public.spaces enable row level security;
 alter table public.space_members enable row level security;
