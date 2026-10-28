@@ -14,7 +14,7 @@ It is a personal project I use every day. It is free and open source
 - Accounts, transactions, categories and budgets in the Monarch mould, with
   Israel-specific categories (Arnona, Va'ad Bayit, Tzedakah) added
 - US banks, cards and brokerage accounts via Plaid; Israeli accounts via
-  RiseUp's official API
+  RiseUp's official API or Financy's open-banking API, whichever you have
 - Israeli pension and hishtalmut tracks rolled forward from the published
   monthly yields on data.gov.il
 - Daily USD/ILS rates from the ECB, backfilled to 2019
@@ -35,7 +35,14 @@ It is a personal project I use every day. It is free and open source
 | Plaid | US banks, cards, brokerage (txns, balances, holdings) | `/transactions/sync` + `/investments/holdings/get`, access tokens in Supabase Vault |
 | RiseUp | Israeli accounts: transactions with RiseUp's Hebrew categories | Official PAT API (`input.riseup.co.il/api/external`), token expires every 30 days — UI warns at day 25. No balances endpoint yet (balances stay manual until RiseUp ships it) |
 | data.gov.il | Pension/hishtalmut track yields (Gemelnet/Pensianet) | "Anchor + drift": statement balance rolled forward by published monthly yield minus fee, plus deposits |
+| Financy (open-finance.ai) | Israeli banks, cards, loans and savings: accounts, balances and transactions with Financy's categories | Official REST API (`api.open-finance.ai`) with your own client id / secret / user id, stored in Supabase Vault. Banks are linked inside the Financy app; the API needs a paid Financy plan |
 | frankfurter.dev | Daily USD/ILS (ECB) | `fx_rates` table, backfilled to 2019 |
+
+RiseUp and Financy both cover Israeli accounts, so use either or both. RiseUp
+needs a personal token renewed every 30 days and has no balances; Financy
+needs a paid plan and returns balances and a year of daily history straight
+from the bank. Peanut keeps only the API credentials; the bank consent lives
+with the provider.
 
 ## Self-host
 
@@ -66,7 +73,8 @@ It is a personal project I use every day. It is free and open source
 
 - Manual: Settings → Sync, or automatically after connecting.
 - Scheduled: Vercel Cron hits `GET /api/cron/daily` at 03:00 UTC with
-  `Authorization: Bearer $CRON_SECRET` (fx → riseup → plaid → pensions → snapshots).
+  `Authorization: Bearer $CRON_SECRET` (fx → every bank connection: RiseUp,
+  Plaid, Financy → pensions → snapshots).
 
 ## Status
 

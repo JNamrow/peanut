@@ -3,11 +3,16 @@
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { usePlaidLink } from "react-plaid-link";
-import { Plus, Landmark, Leaf, PiggyBank, Pencil, X } from "lucide-react";
+import { Plus, Landmark, Leaf, Building2, PiggyBank, Pencil, X } from "lucide-react";
 import { buttonCls, inputCls, selectCls } from "@/components/ui";
-import { addManualAccount, addPensionAccount, connectRiseup } from "../actions";
+import {
+  addManualAccount,
+  addPensionAccount,
+  connectFinancy,
+  connectRiseup,
+} from "../actions";
 
-type Panel = "menu" | "plaid" | "riseup" | "pension" | "manual";
+type Panel = "menu" | "plaid" | "riseup" | "financy" | "pension" | "manual";
 
 export function AddAccountButton({ primary = false }: { primary?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -40,6 +45,7 @@ function AddAccountModal({ onClose }: { onClose: () => void }) {
             {panel === "menu" && "Add account"}
             {panel === "plaid" && "Connect a US institution"}
             {panel === "riseup" && "Connect RiseUp (Israel)"}
+            {panel === "financy" && "Connect Financy (Israel)"}
             {panel === "pension" && "Israeli pension / study fund"}
             {panel === "manual" && "Manual account"}
           </h2>
@@ -50,6 +56,7 @@ function AddAccountModal({ onClose }: { onClose: () => void }) {
         {panel === "menu" ? <Menu onPick={setPanel} /> : null}
         {panel === "plaid" ? <PlaidPanel onDone={onClose} /> : null}
         {panel === "riseup" ? <RiseupPanel onDone={onClose} /> : null}
+        {panel === "financy" ? <FinancyPanel onDone={onClose} /> : null}
         {panel === "pension" ? <PensionPanel onDone={onClose} /> : null}
         {panel === "manual" ? <ManualPanel onDone={onClose} /> : null}
       </div>
@@ -70,6 +77,12 @@ function Menu({ onPick }: { onPick: (p: Panel) => void }) {
       icon: <Leaf size={17} />,
       title: "RiseUp (Israel)",
       sub: "Israeli banks + cards with RiseUp categories, via API token",
+    },
+    {
+      panel: "financy",
+      icon: <Building2 size={17} />,
+      title: "Financy (Israel)",
+      sub: "Israeli banks + cards via open banking, with your Financy API key",
     },
     {
       panel: "pension",
@@ -222,6 +235,76 @@ function RiseupPanel({ onDone }: { onDone: () => void }) {
       {error ? <p className="text-[13px] text-neg">{error}</p> : null}
       <button className={buttonCls("primary")} disabled={pending}>
         {pending ? "Connecting + first sync (can take a minute)…" : "Connect RiseUp"}
+      </button>
+    </form>
+  );
+}
+
+function FinancyPanel({ onDone }: { onDone: () => void }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function submit(formData: FormData) {
+    setError(null);
+    startTransition(async () => {
+      const result = await connectFinancy(formData);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      router.refresh();
+      onDone();
+    });
+  }
+
+  return (
+    <form action={submit} className="flex flex-col gap-3">
+      <p className="text-[13px] text-muted">
+        1. In the{" "}
+        <a
+          href="https://financy.open-finance.ai/"
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium text-accent"
+        >
+          Financy
+        </a>{" "}
+        app, link your banks and cards (open banking, supervised by the Bank
+        of Israel).
+        <br />
+        2. Open <b>Settings → API access</b> there and copy the three values
+        below. The API needs a paid Financy plan.
+        <br />
+        3. Peanut only reads: accounts, balances and transactions.
+      </p>
+      <input
+        name="client_id"
+        className={inputCls}
+        placeholder="Client id"
+        autoComplete="off"
+      />
+      <input
+        name="client_secret"
+        type="password"
+        className={inputCls}
+        placeholder="Client secret"
+        autoComplete="off"
+      />
+      <input
+        name="user_id"
+        className={inputCls}
+        placeholder="User id"
+        autoComplete="off"
+      />
+      <p className="text-[12px] text-faint">
+        The secret is stored encrypted in Supabase Vault and never shown again.
+        The first sync pulls 12 months of transactions with Financy&apos;s
+        categories and a year of daily balances for your bank accounts.
+      </p>
+      {error ? <p className="text-[13px] text-neg">{error}</p> : null}
+      <button className={buttonCls("primary")} disabled={pending}>
+        {pending ? "Connecting + first sync (can take a minute)…" : "Connect Financy"}
       </button>
     </form>
   );

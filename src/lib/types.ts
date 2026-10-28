@@ -33,7 +33,7 @@ export interface Account {
   id: string;
   space_id: string;
   connection_id: string | null;
-  source: "plaid" | "riseup" | "manual";
+  source: "plaid" | "riseup" | "financy" | "manual";
   external_id: string | null;
   name: string;
   official_name: string | null;
@@ -65,7 +65,7 @@ export interface Account {
 export interface Connection {
   id: string;
   space_id: string;
-  provider: "plaid" | "riseup" | "manual";
+  provider: "plaid" | "riseup" | "financy" | "manual";
   label: string | null;
   institution_name: string | null;
   environment: string | null;
@@ -97,7 +97,7 @@ export interface Transaction {
   space_id: string;
   account_id: string;
   connection_id: string | null;
-  source: "plaid" | "riseup" | "manual";
+  source: "plaid" | "riseup" | "financy" | "manual";
   external_id: string | null;
   date: string;
   name: string;
