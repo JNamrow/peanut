@@ -1,5 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { backfillFx } from "@/lib/sync/fx";
 import { DEMO_RESET_MS, demoCredentials } from "./config";
 import { buildDemoData, DEMO_SPACE_ID, type DemoData } from "./seed";
 
@@ -115,6 +116,13 @@ export async function ensureDemoUsers(): Promise<DemoUsers> {
   return { userId, partnerId };
 }
 
+/** A fresh project has no exchange rates; load the real daily series once. */
+async function ensureFxRates(admin: Admin): Promise<void> {
+  const { count } = await admin.from("fx_rates").select("*", { count: "exact", head: true });
+  if ((count ?? 0) >= 200) return;
+  await backfillFx(2024);
+}
+
 export async function demoSpaceExists(): Promise<boolean> {
   const admin = createAdminClient();
   const { data } = await admin.from("spaces").select("id").eq("id", DEMO_SPACE_ID).maybeSingle();
@@ -126,6 +134,7 @@ export async function resetDemoSpace(users: DemoUsers, now = new Date()): Promis
   const admin = createAdminClient();
   const data = buildDemoData(now, users);
   const space = data.spaces[0];
+  await ensureFxRates(admin);
 
   await admin
     .from("spaces")
