@@ -17,6 +17,26 @@ of history), so click around and change whatever you like. It resets every
 couple of hours. Bank connections and uploads are switched off in the demo;
 run Peanut yourself to use it with your own accounts.
 
+## Screenshots
+
+Every screenshot is the live demo household.
+
+| Dashboard | Accounts |
+|---|---|
+| ![Dashboard](docs/screenshots/01-dashboard.jpg) | ![Accounts](docs/screenshots/02-accounts.jpg) |
+
+| Transactions | Reports |
+|---|---|
+| ![Transactions](docs/screenshots/03-transactions.jpg) | ![Reports](docs/screenshots/05-reports.jpg) |
+
+| Budget | Recurring |
+|---|---|
+| ![Budget](docs/screenshots/06-budget.jpg) | ![Recurring](docs/screenshots/07-recurring.jpg) |
+
+| Investments | Forecasting |
+|---|---|
+| ![Investments](docs/screenshots/09-investments.jpg) | ![Forecasting](docs/screenshots/10-forecasting.jpg) |
+
 ## What it does
 
 - Accounts, transactions, categories and budgets in the Monarch mould, with
