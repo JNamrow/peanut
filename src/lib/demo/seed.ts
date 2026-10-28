@@ -553,7 +553,7 @@ const STREAM_DEFS: readonly StreamDef[] = [
   stream({ key: "maccabi", name: "מכבי שירותי בריאות", account: "leumiChecking", category: "Kupat Cholim", day: 11, amount: 296, logo: "maccabi4u.co.il" }),
   stream({ key: "harel", name: "הראל ביטוח", account: "leumiChecking", category: "Insurance", day: 6, amount: 320, logo: "harel-group.co.il" }),
   stream({ key: "carLoan", name: "Leumi Car Loan", account: "leumiChecking", category: "Auto Payment", day: 20, amount: 1150, logo: "leumi.co.il" }),
-  stream({ key: "mayaSalary", name: "Lumio Tech Ltd Salary", account: "leumiChecking", category: "Paychecks", day: 10, amount: 34000, jitter: 0.012, kind: "income" }),
+  stream({ key: "mayaSalary", name: "Lumio Tech Ltd Salary", account: "leumiChecking", category: "Paychecks", day: 10, amount: 37500, jitter: 0.012, kind: "income" }),
   stream({ key: "electric", name: "חברת החשמל", account: "leumiChecking", category: "Gas & Electric", cadence: "every_2_months", day: 18, amount: 740, jitter: 0.3, parity: 1, listed: false }),
   stream({ key: "water", name: "מי אביבים", account: "leumiChecking", category: "Water", cadence: "every_2_months", day: 22, amount: 245, jitter: 0.25, parity: 1, listed: false }),
   stream({ key: "latet", name: "לתת", account: "leumiChecking", category: "Tzedakah & Charity", day: 4, amount: 250, listed: false }),
@@ -716,7 +716,7 @@ const BILL_DEFS: readonly { card: AccountKey; day: number; bankName: string; car
 ];
 
 const BUDGET_ILS: readonly (readonly [string, number])[] = [
-  ["Paychecks", 34000], ["Groceries", 3200], ["Restaurants & Bars", 1400], ["Coffee Shops", 350], ["Gas", 900],
+  ["Paychecks", 37500], ["Groceries", 3200], ["Restaurants & Bars", 1400], ["Coffee Shops", 350], ["Gas", 900],
   ["Rent", 6200], ["Arnona", 700], ["Va'ad Bayit", 350], ["Gas & Electric", 400], ["Phone", 120],
   ["Kupat Cholim", 300], ["Fitness", 300], ["Public Transit", 250], ["Shopping", 600], ["Clothing", 600],
   ["Personal", 450], ["Entertainment & Recreation", 300], ["Insurance", 350], ["Auto Payment", 1150],
@@ -1549,13 +1549,13 @@ function buildDemoDataRaw(now: Date = new Date()): DemoData {
       },
     ],
     forecast_incomes: [
-      { id: uuidFromKey("income:maya"), space_id: DEMO_SPACE_ID, member_user_id: DEMO_USER_ID, name: "Maya - Lumio Tech", icon: "💼", yearly_amount: 408000, currency: "ILS", stops_at_retirement: true, created_at: seed.startIso, excluded: false },
+      { id: uuidFromKey("income:maya"), space_id: DEMO_SPACE_ID, member_user_id: DEMO_USER_ID, name: "Maya - Lumio Tech", icon: "💼", yearly_amount: 450000, currency: "ILS", stops_at_retirement: true, created_at: seed.startIso, excluded: false },
       { id: uuidFromKey("income:tom"), space_id: DEMO_SPACE_ID, member_user_id: DEMO_PARTNER_ID, name: "Tom - Northwind Labs", icon: "🧑‍💻", yearly_amount: 115200, currency: "USD", stops_at_retirement: true, created_at: seed.startIso, excluded: false },
     ],
     forecast_events: [
       { id: uuidFromKey("forecast-event:japan"), space_id: DEMO_SPACE_ID, name: "Japan trip", icon: "🗾", kind: "one_time", affects: "expense", year: y + 1, end_year: null, amount: 6000, currency: "USD", created_at: seed.startIso },
       { id: uuidFromKey("forecast-event:car"), space_id: DEMO_SPACE_ID, name: "New car", icon: "🚗", kind: "one_time", affects: "expense", year: y + 3, end_year: null, amount: 120000, currency: "ILS", created_at: seed.startIso },
-      { id: uuidFromKey("forecast-event:apartment"), space_id: DEMO_SPACE_ID, name: "Apartment down payment", icon: "🏠", kind: "one_time", affects: "expense", year: y + 5, end_year: null, amount: 600000, currency: "ILS", created_at: seed.startIso },
+      { id: uuidFromKey("forecast-event:apartment"), space_id: DEMO_SPACE_ID, name: "Apartment down payment", icon: "🏠", kind: "one_time", affects: "expense", year: y + 5, end_year: null, amount: 160000, currency: "USD", created_at: seed.startIso },
     ],
     forecast_splits: [],
     fx_rates,
