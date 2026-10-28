@@ -1,4 +1,5 @@
 import { getAccounts, getCategories, getContext } from "@/lib/data";
+import { fetchAll } from "@/lib/fetch-all";
 import { computeCashflowPerCurrency, currencyOrder } from "@/lib/multicurrency";
 import { fmtMoney, fmtPct, monthStart, addMonths, shortDate } from "@/lib/format";
 import { Donut, DONUT_COLORS, TrendBars } from "@/components/charts";
@@ -74,10 +75,12 @@ export default async function ReportsPage({
   const { supabase, space } = await getContext();
   const [accounts, categories] = await Promise.all([getAccounts(), getCategories()]);
 
-  let query = supabase.from("transactions").select("*").eq("space_id", space.id);
-  if (from) query = query.gte("date", from);
-  if (to) query = query.lte("date", to);
-  const { data: txns } = await query;
+  const { data: txns } = await fetchAll((start, end) => {
+    let query = supabase.from("transactions").select("*").eq("space_id", space.id);
+    if (from) query = query.gte("date", from);
+    if (to) query = query.lte("date", to);
+    return query.order("date").order("id").range(start, end);
+  });
   const periodList = (txns ?? []) as Transaction[];
 
   // ------------------------------------------- Apply filter params in JS

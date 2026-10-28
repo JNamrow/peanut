@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { fetchAll } from "@/lib/fetch-all";
 import { getAccounts, getCategories, getContext } from "@/lib/data";
 import {
   activeCurrencies,
@@ -28,11 +29,16 @@ export default async function DashboardPage() {
   const [{ data: snapshots }, { data: recentTxns }, { data: periodTxns }, { data: recurring }] =
     await Promise.all([
       accountIds.length
-        ? supabase
-            .from("account_balance_snapshots")
-            .select("*")
-            .in("account_id", accountIds)
-            .gte("as_of_date", ninetyAgo.toISOString().slice(0, 10))
+        ? fetchAll((from, to) =>
+            supabase
+              .from("account_balance_snapshots")
+              .select("*")
+              .in("account_id", accountIds)
+              .gte("as_of_date", ninetyAgo.toISOString().slice(0, 10))
+              .order("as_of_date")
+              .order("account_id")
+              .range(from, to),
+          )
         : Promise.resolve({ data: [] }),
       supabase
         .from("transactions")
@@ -41,11 +47,16 @@ export default async function DashboardPage() {
         .order("date", { ascending: false })
         .order("created_at", { ascending: false })
         .limit(7),
-      supabase
-        .from("transactions")
-        .select("*")
-        .eq("space_id", space.id)
-        .gte("date", sixMonthsAgo),
+      fetchAll((from, to) =>
+        supabase
+          .from("transactions")
+          .select("*")
+          .eq("space_id", space.id)
+          .gte("date", sixMonthsAgo)
+          .order("date")
+          .order("id")
+          .range(from, to),
+      ),
       supabase
         .from("recurring_streams")
         .select("*")

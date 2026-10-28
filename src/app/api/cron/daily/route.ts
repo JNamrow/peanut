@@ -6,6 +6,8 @@ import { syncPlaid } from "@/lib/sync/plaid";
 import { syncFinancy, markFinancyError, describeFinancyError } from "@/lib/sync/financy";
 import { applyPensionDrift } from "@/lib/sync/pensions";
 import { writeDailySnapshots } from "@/lib/sync/housekeeping";
+import { isDemoDeployment } from "@/lib/demo/config";
+import { ensureDemoUsers, resetDemoIfStale } from "@/lib/demo/reset";
 
 export const maxDuration = 300;
 
@@ -21,6 +23,17 @@ export async function GET(request: Request) {
     report.fx = await syncFxLatest();
   } catch (e) {
     report.fx_error = String(e);
+  }
+
+  if (isDemoDeployment()) {
+    // The sandbox has no real providers; keep it fresh and keep the snapshots coming.
+    try {
+      report.demo = await resetDemoIfStale(await ensureDemoUsers());
+    } catch (e) {
+      report.demo_error = String(e);
+    }
+    report.snapshots = await writeDailySnapshots();
+    return NextResponse.json(report);
   }
 
   const admin = createAdminClient();

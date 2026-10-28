@@ -3,6 +3,9 @@ import { getContext } from "@/lib/data";
 import { plaidPost } from "@/lib/sync/plaid";
 
 export async function POST() {
+  if (process.env.DEMO_MODE === "1") {
+    return NextResponse.json({ error: "Not available in the demo." }, { status: 404 });
+  }
   try {
     const { userId } = await getContext();
     // Note: no optional_products — this Plaid account has transactions only.

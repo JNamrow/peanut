@@ -5,6 +5,9 @@ import { plaidPost, syncPlaid } from "@/lib/sync/plaid";
 import { writeDailySnapshots } from "@/lib/sync/housekeeping";
 
 export async function POST(request: Request) {
+  if (process.env.DEMO_MODE === "1") {
+    return NextResponse.json({ error: "Not available in the demo." }, { status: 404 });
+  }
   const { space, userId } = await getContext();
   const { public_token, institution_name } = (await request.json()) as {
     public_token: string;

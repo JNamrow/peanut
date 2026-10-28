@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { fetchAll } from "@/lib/fetch-all";
 import { getAccounts, getContext } from "@/lib/data";
 import {
   activeCurrencies,
@@ -88,11 +89,16 @@ export default async function AccountsPage({
   since.setDate(since.getDate() - days - 5);
   const accountIds = accounts.map((a) => a.id);
   const { data: snapshots } = accountIds.length
-    ? await supabase
-        .from("account_balance_snapshots")
-        .select("*")
-        .in("account_id", accountIds)
-        .gte("as_of_date", since.toISOString().slice(0, 10))
+    ? await fetchAll((from, to) =>
+        supabase
+          .from("account_balance_snapshots")
+          .select("*")
+          .in("account_id", accountIds)
+          .gte("as_of_date", since.toISOString().slice(0, 10))
+          .order("as_of_date")
+          .order("account_id")
+          .range(from, to),
+      )
     : { data: [] };
 
   const currencies = activeCurrencies(accounts);

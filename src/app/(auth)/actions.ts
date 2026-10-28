@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { DEMO_BLOCKED, isDemoDeployment } from "@/lib/demo/config";
 
 export interface AuthState {
   error: string | null;
@@ -24,13 +25,14 @@ export async function signIn(
 export async function signOut() {
   const supabase = await createClient();
   await supabase.auth.signOut();
-  redirect("/login");
+  redirect(isDemoDeployment() ? "/contact" : "/login");
 }
 
 export async function updatePassword(
   _prev: AuthState,
   formData: FormData,
 ): Promise<AuthState> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const password = String(formData.get("password") ?? "");
   if (password.length < 8) return { error: "Use at least 8 characters." };
   const supabase = await createClient();

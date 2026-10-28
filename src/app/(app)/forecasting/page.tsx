@@ -1,4 +1,5 @@
 import { getAccounts, getCategories, getContext } from "@/lib/data";
+import { fetchAll } from "@/lib/fetch-all";
 import { computeCashflowPerCurrency } from "@/lib/multicurrency";
 import { addMonths, monthStart } from "@/lib/format";
 import {
@@ -58,11 +59,16 @@ export default async function ForecastingPage() {
       .select("*")
       .eq("space_id", space.id)
       .order("position"),
-    supabase
-      .from("transactions")
-      .select("*")
-      .eq("space_id", space.id)
-      .gte("date", addMonths(monthStart(), -12)),
+    fetchAll((from, to) =>
+      supabase
+        .from("transactions")
+        .select("*")
+        .eq("space_id", space.id)
+        .gte("date", addMonths(monthStart(), -12))
+        .order("date")
+        .order("id")
+        .range(from, to),
+    ),
   ]);
 
   // Last-12-months actuals per currency (income + expenses).
