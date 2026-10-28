@@ -1,4 +1,5 @@
 import { getCategories, getContext } from "@/lib/data";
+import { fetchAll } from "@/lib/fetch-all";
 import { computeCashflowPerCurrency, currencyOrder } from "@/lib/multicurrency";
 import { addMonths, fmtMoney, fmtPct, monthLabel, monthStart } from "@/lib/format";
 import { TrendBars } from "@/components/charts";
@@ -19,11 +20,16 @@ export default async function CashFlowPage({
   const month = params.month ?? monthStart().slice(0, 7);
   const since = addMonths(monthStart(), -11);
 
-  const { data: txns } = await supabase
-    .from("transactions")
-    .select("*")
-    .eq("space_id", space.id)
-    .gte("date", since);
+  const { data: txns } = await fetchAll((from, to) =>
+    supabase
+      .from("transactions")
+      .select("*")
+      .eq("space_id", space.id)
+      .gte("date", since)
+      .order("date")
+      .order("id")
+      .range(from, to),
+  );
 
   const byMonth = new Map<string, Transaction[]>();
   const seen = new Set<string>();

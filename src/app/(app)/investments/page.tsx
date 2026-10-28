@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { fetchAll } from "@/lib/fetch-all";
 import type { ReactNode } from "react";
 import { Info, TrendingUp } from "lucide-react";
 import { getAccounts, getContext } from "@/lib/data";
@@ -116,11 +117,16 @@ export default async function InvestmentsPage({
   const [{ data: snapshots }, { data: holdingRows }, { data: cfgRows }] =
     await Promise.all([
       ids.length
-        ? supabase
-            .from("account_balance_snapshots")
-            .select("*")
-            .in("account_id", ids)
-            .gte("as_of_date", since.toISOString().slice(0, 10))
+        ? fetchAll((from, to) =>
+            supabase
+              .from("account_balance_snapshots")
+              .select("*")
+              .in("account_id", ids)
+              .gte("as_of_date", since.toISOString().slice(0, 10))
+              .order("as_of_date")
+              .order("account_id")
+              .range(from, to),
+          )
         : Promise.resolve({ data: [] }),
       ids.length
         ? supabase.from("holdings").select("*").in("account_id", ids)

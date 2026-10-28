@@ -1,4 +1,5 @@
 import "server-only";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { backfillFx } from "@/lib/sync/fx";
 import { DEMO_RESET_MS, demoCredentials } from "./config";
@@ -85,12 +86,23 @@ export async function ensureDemoUsers(): Promise<DemoUsers> {
 
   let userId = await findUserByEmail(admin, creds.email);
   if (userId) {
-    const { error } = await admin.auth.admin.updateUserById(userId, {
-      email: creds.email,
-      password: creds.password,
-      email_confirm: true,
-    });
-    if (error) throw new Error(`demo reset: reset password: ${error.message}`);
+    // A password update signs every current visitor out, so only do it when
+    // the published password has actually stopped working.
+    const probe = createSupabaseClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { auth: { persistSession: false, autoRefreshToken: false } },
+    );
+    const { error: probeError } = await probe.auth.signInWithPassword(creds);
+    const tampered = probeError?.code === "invalid_credentials" || probeError?.status === 400;
+    if (tampered) {
+      const { error } = await admin.auth.admin.updateUserById(userId, {
+        email: creds.email,
+        password: creds.password,
+        email_confirm: true,
+      });
+      if (error) throw new Error(`demo reset: reset password: ${error.message}`);
+    }
   } else {
     const { data, error } = await admin.auth.admin.createUser({
       email: creds.email,
