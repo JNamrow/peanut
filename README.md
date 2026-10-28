@@ -11,7 +11,7 @@ It is a personal project I use every day. It is free and open source
 
 ## Try it
 
-**[Open the live demo](<DEMO_URL>)**. One click, no sign-up. It is a shared
+**[Open the live demo](https://peanut-demo.vercel.app)**. One click, no sign-up. It is a shared
 household with made-up data (two people, shekel and dollar accounts, two years
 of history), so click around and change whatever you like. It resets every
 couple of hours. Bank connections and uploads are switched off in the demo;
