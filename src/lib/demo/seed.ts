@@ -1224,6 +1224,28 @@ function monthlyPath(seed: Seed, def: GrowthDef, target: number): { date: string
   return out;
 }
 
+/**
+ * Daily balances between the monthly points. The real app snapshots every
+ * account every night, and the net-worth windows assume that: an account with
+ * only monthly rows would drop out of the first days of a window.
+ */
+function expandDaily(path: { date: string; value: number }[]): { date: string; value: number }[] {
+  const out: { date: string; value: number }[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    if (!b) {
+      out.push(a);
+      break;
+    }
+    const span = Math.max(1, Math.round((parseYmd(b.date).getTime() - parseYmd(a.date).getTime()) / 86_400_000));
+    for (let k = 0; k < span; k++) {
+      out.push({ date: addDays(a.date, k), value: round2(a.value + ((b.value - a.value) * k) / span) });
+    }
+  }
+  return out;
+}
+
 function buildSnapshots(seed: Seed): SnapshotResult {
   const rows: BalanceSnapshotRow[] = [];
   const paths = new Map<AccountKey, { date: string; value: number }[]>();
@@ -1249,7 +1271,7 @@ function buildSnapshots(seed: Seed): SnapshotResult {
       if (!growth) continue;
       const path = monthlyPath(seed, growth, holdingsTotal.get(def.key) ?? def.target);
       paths.set(def.key, path);
-      for (const p of path) rows.push({ account_id: acc.id, as_of_date: p.date, balance: p.value, currency: acc.currency, source: "sync" });
+      for (const p of expandDaily(path)) rows.push({ account_id: acc.id, as_of_date: p.date, balance: p.value, currency: acc.currency, source: "sync" });
       acc.current_balance = path[path.length - 1].value;
     }
     acc.available_balance = def.creditLimit != null ? round2(def.creditLimit + acc.current_balance) : acc.current_balance;
