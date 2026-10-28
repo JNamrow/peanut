@@ -4,6 +4,7 @@ import { updateSpace } from "../actions";
 import { ConnectionRow } from "./settings-ui";
 import { PasswordForm } from "./password-form";
 import type { Connection } from "@/lib/types";
+import { isDemoDeployment } from "@/lib/demo/config";
 
 export default async function SettingsPage() {
   const { supabase, space, members } = await getContext();
@@ -56,10 +57,12 @@ export default async function SettingsPage() {
           </div>
         </Card>
 
-        <Card>
-          <CardHeader title="Password" sub="for your login" />
-          <PasswordForm />
-        </Card>
+        {isDemoDeployment() ? null : (
+          <Card>
+            <CardHeader title="Password" sub="for your login" />
+            <PasswordForm />
+          </Card>
+        )}
 
         <Card>
           <CardHeader title="Connections" />

@@ -2,8 +2,10 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { PeanutMark } from "./logo";
 import { NavLink } from "./nav";
+import { DemoBanner } from "./demo-banner";
 import { getContext } from "@/lib/data";
 import { signOut } from "@/app/(auth)/actions";
+import { isDemoDeployment } from "@/lib/demo/config";
 import { LogOut } from "lucide-react";
 
 const NAV: { slug: string; label: string }[] = [
@@ -23,6 +25,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
   const ctx = await getContext();
   const me = ctx.members.find((m) => m.user_id === ctx.userId);
   const name = me?.display_name ?? ctx.userEmail.split("@")[0];
+  const demo = isDemoDeployment();
 
   return (
     <div className="flex min-h-dvh">
@@ -45,18 +48,23 @@ export async function AppShell({ children }: { children: ReactNode }) {
               </span>
               <span className="text-[13px] font-medium">{name}</span>
             </div>
-            <form action={signOut}>
-              <button
-                className="cursor-pointer text-muted transition-colors hover:text-ink"
-                title="Sign out"
-              >
-                <LogOut size={15} />
-              </button>
-            </form>
+            {demo ? null : (
+              <form action={signOut}>
+                <button
+                  className="cursor-pointer text-muted transition-colors hover:text-ink"
+                  title="Sign out"
+                >
+                  <LogOut size={15} />
+                </button>
+              </form>
+            )}
           </div>
         </div>
       </aside>
-      <main className="ml-[210px] min-w-0 flex-1 pb-16">{children}</main>
+      <main className="ml-[210px] min-w-0 flex-1 pb-16">
+        {demo ? <DemoBanner /> : null}
+        {children}
+      </main>
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
 import { detectRecurring, writeDailySnapshots } from "@/lib/sync/housekeeping";
 import { CADENCE_LABELS, occurrencesInMonth, type Cadence } from "@/lib/recurring";
 import type { AccountType, TransactionEvent } from "@/lib/types";
+import { DEMO_BLOCKED, isDemoDeployment } from "@/lib/demo/config";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -134,6 +135,7 @@ export async function uploadReceipt(
   txnId: string,
   formData: FormData,
 ): Promise<{ error: string | null }> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const { supabase, space, members, userId } = await getContext();
   const file = formData.get("file") as File | null;
   if (!file || file.size === 0) return { error: "No file chosen." };
@@ -175,6 +177,7 @@ export async function uploadReceipt(
 
 /** Signed URL for a private receipt (1 hour). */
 export async function receiptUrl(path: string): Promise<string | null> {
+  if (isDemoDeployment()) return null;
   const { space } = await getContext();
   if (!path.startsWith(`${space.id}/`)) return null; // space isolation
   const admin = createAdminClient();
@@ -185,6 +188,7 @@ export async function receiptUrl(path: string): Promise<string | null> {
 }
 
 export async function removeReceipt(txnId: string, path: string) {
+  if (isDemoDeployment()) return;
   const { supabase, space, members, userId } = await getContext();
   if (!path.startsWith(`${space.id}/`)) return;
   const { data: txn } = await supabase
@@ -386,6 +390,7 @@ function describeRiseupError(e: unknown): string {
 }
 
 export async function connectRiseup(formData: FormData): Promise<ActionResult> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const { supabase, space, userId } = await getContext();
   const token = String(formData.get("token") ?? "").trim();
   if (!token.startsWith("riseup_pat_")) {
@@ -434,6 +439,7 @@ export async function renewRiseupToken(
   connectionId: string,
   formData: FormData,
 ): Promise<ActionResult> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const { supabase } = await getContext();
   const token = String(formData.get("token") ?? "").trim();
   if (!token.startsWith("riseup_pat_")) {
@@ -487,6 +493,7 @@ function financyCredentialsFrom(formData: FormData) {
 
 /** Financy keeps the bank links; Peanut keeps the three API credentials. */
 export async function connectFinancy(formData: FormData): Promise<ActionResult> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const { supabase, space, userId } = await getContext();
   const creds = financyCredentialsFrom(formData);
   if (!creds) {
@@ -542,6 +549,7 @@ export async function updateFinancyCredentials(
   connectionId: string,
   formData: FormData,
 ): Promise<ActionResult> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const { supabase } = await getContext();
   const creds = financyCredentialsFrom(formData);
   if (!creds) {
@@ -587,6 +595,7 @@ export async function updateFinancyCredentials(
 export async function refreshFinancyNow(
   connectionId: string,
 ): Promise<{ error: string | null; message?: string }> {
+  if (isDemoDeployment()) return { error: DEMO_BLOCKED };
   const { supabase } = await getContext();
   const { data: conn } = await supabase
     .from("connections")
@@ -603,6 +612,7 @@ export async function refreshFinancyNow(
 }
 
 export async function syncConnectionNow(connectionId: string) {
+  if (isDemoDeployment()) throw new Error(DEMO_BLOCKED);
   const { supabase } = await getContext();
   const { data: conn } = await supabase
     .from("connections")
@@ -895,7 +905,8 @@ export async function upsertRecurringStream(
     status: data.status === "ended" ? "ended" : "active",
     account_id: accountId,
     logo_domain: data.logoDomain?.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || null,
-    logo_url: data.logoUrl?.trim() || null,
+    // Uploaded logos are data URLs in the row; the shared demo keeps them out.
+    logo_url: isDemoDeployment() ? null : data.logoUrl?.trim() || null,
     category_id: (lastCat?.category_id as string | null) ?? null,
     next_expected_date: firstOccurrenceOnOrAfter(data.cadence, data.startDate, today()),
   };
